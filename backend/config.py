@@ -1,0 +1,33 @@
+from pydantic_settings import BaseSettings
+from functools import lru_cache
+
+
+class Settings(BaseSettings):
+    # Google Maps
+    google_maps_api_key: str
+
+    # Security
+    backend_api_key: str
+
+    # Rate Limiting
+    rate_limit_per_minute: int = 60
+    rate_limit_per_day: int = 1000
+
+    # Redis / Cache
+    redis_url: str = "redis://localhost:6379"
+    cache_ttl_places_seconds: int = 3600
+    cache_ttl_directions_seconds: int = 1800
+    cache_ttl_geocode_seconds: int = 86400
+
+    # App
+    debug: bool = False
+    backend_url: str = "http://localhost:8000"
+
+    class Config:
+        env_file = ".env"
+        case_sensitive = False
+
+
+@lru_cache()
+def get_settings() -> Settings:
+    return Settings()

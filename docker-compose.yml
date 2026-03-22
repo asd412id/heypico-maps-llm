@@ -1,0 +1,124 @@
+version: "3.8"
+
+services:
+  # ─────────────────────────────────────────────
+  # Ollama — Local LLM Runtime
+  # ─────────────────────────────────────────────
+  ollama:
+    image: ollama/ollama:latest
+    container_name: heypico-ollama
+    restart: unless-stopped
+    ports:
+      - "11434:11434"
+    volumes:
+      - ollama_data:/root/.ollama
+    environment:
+      - OLLAMA_KEEP_ALIVE=24h
+      - OLLAMA_NUM_PARALLEL=2
+    # Remove the deploy block below if you don't have an NVIDIA GPU
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:11434/api/version"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+
+  # ─────────────────────────────────────────────
+  # Ollama Model Puller — Pull Qwen 3.5 on start
+  # ─────────────────────────────────────────────
+  ollama-pull:
+    image: ollama/ollama:latest
+    container_name: heypico-ollama-pull
+    depends_on:
+      ollama:
+        condition: service_healthy
+    environment:
+      - OLLAMA_HOST=http://ollama:11434
+    entrypoint: ["/bin/sh", "-c", "ollama pull qwen3.5:4b && echo 'Model ready'"]
+    volumes:
+      - ollama_data:/root/.ollama
+    restart: "no"
+
+  # ─────────────────────────────────────────────
+  # Redis — Cache Layer for Google Maps responses
+  # ─────────────────────────────────────────────
+  redis:
+    image: redis:7-alpine
+    container_name: heypico-redis
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    command: redis-server --appendonly yes --maxmemory 256mb --maxmemory-policy allkeys-lru
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ─────────────────────────────────────────────
+  # Backend — FastAPI Google Maps Proxy
+  # ─────────────────────────────────────────────
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: heypico-backend
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    env_file:
+      - .env
+    environment:
+      - REDIS_URL=redis://redis:6379
+    depends_on:
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+    volumes:
+      - ./backend:/app
+
+  # ─────────────────────────────────────────────
+  # Open WebUI — Chat Frontend + Tool Orchestrator
+  # ─────────────────────────────────────────────
+  open-webui:
+    image: ghcr.io/open-webui/open-webui:main
+    container_name: heypico-open-webui
+    restart: unless-stopped
+    ports:
+      - "3000:8080"
+    environment:
+      - OLLAMA_BASE_URL=http://ollama:11434
+      - WEBUI_SECRET_KEY=${WEBUI_SECRET_KEY}
+      - DEFAULT_MODELS=qwen3.5:4b
+      - ENABLE_COMMUNITY_SHARING=false
+      - ENABLE_MESSAGE_RATING=true
+      - TOOLS_FUNCTION_CALLING_PROMPT_TEMPLATE=""
+    depends_on:
+      ollama:
+        condition: service_healthy
+      backend:
+        condition: service_healthy
+    volumes:
+      - open_webui_data:/app/backend/data
+      - ./openwebui-tools:/app/backend/data/tools
+
+volumes:
+  ollama_data:
+  redis_data:
+  open_webui_data:
+
+networks:
+  default:
+    name: heypico-network

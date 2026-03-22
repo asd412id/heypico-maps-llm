@@ -1,0 +1,42 @@
+# ─── Environment & Secrets ───
+.env
+*.env
+!.env.example
+
+# ─── Python ───
+__pycache__/
+*.py[cod]
+*$py.class
+*.pyc
+.pytest_cache/
+.mypy_cache/
+.venv/
+venv/
+env/
+dist/
+build/
+*.egg-info/
+
+# ─── Docker ───
+docker-compose.override.yml
+
+# ─── IDE ───
+.vscode/
+.idea/
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
+
+# ─── Logs ───
+*.log
+logs/
+
+# ─── Data volumes (local mounts) ───
+ollama_data/
+redis_data/
+webui_data/
+
+# ─── Screenshots ───
+docs/screenshots/*.png
+docs/screenshots/*.jpg
