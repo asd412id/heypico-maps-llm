@@ -52,21 +52,6 @@ class Tools:
             backend_api_key=os.getenv("BACKEND_API_KEY", ""),
             google_maps_api_key=os.getenv("GOOGLE_MAPS_API_KEY", ""),
         )
-        backend_api_key: str = Field(
-            default="",
-            description="Internal API key for the backend",
-        )
-        google_maps_api_key: str = Field(
-            default="",
-            description="Google Maps API key for embed iframe and static maps",
-        )
-
-    def __init__(self):
-        self.valves = self.Valves(
-            backend_url=os.getenv("BACKEND_URL", "http://backend:8000"),
-            backend_api_key=os.getenv("BACKEND_API_KEY", ""),
-            google_maps_api_key=os.getenv("GOOGLE_MAPS_API_KEY", ""),
-        )
 
     async def explore_area(
         self,
