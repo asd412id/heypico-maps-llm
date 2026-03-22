@@ -177,6 +177,24 @@ def configure_valves(token, tool_ids):
             )
 
 
+def set_default_model(token, model_id="heypico-maps"):
+    r = api(
+        "/api/v1/configs/models",
+        {
+            "DEFAULT_MODELS": model_id,
+            "DEFAULT_PINNED_MODELS": "",
+            "MODEL_ORDER_LIST": [],
+            "DEFAULT_MODEL_METADATA": {},
+            "DEFAULT_MODEL_PARAMS": {},
+        },
+        token,
+    )
+    if "_error" not in r:
+        print(f"[setup] Default model set: {model_id}")
+    else:
+        print(f"[setup] Default model FAILED: {r.get('_error')} {r.get('_detail', '')}")
+
+
 def create_model(token, tool_ids):
     model_id = "heypico-maps"
     model_data = {
@@ -190,9 +208,16 @@ def create_model(token, tool_ids):
                 "1. For ANY question about places, locations, restaurants, cafes, shops, stores, attractions, hotels, directions, routes, or anything that can be found on a map — you MUST call the Google Maps tools. NEVER answer from memory.\n"
                 "2. Available tools: search_places (find places), get_directions (route between locations), explore_area (discover places by category).\n"
                 "3. NEVER invent or hallucinate place names, addresses, or store names. If a user asks where to find something, use search_places.\n"
-                "4. After the tool returns results, provide a brief helpful summary based on the actual data returned.\n"
-                "5. If the user asks in any language, still call the tools — they handle all languages.\n"
-                "6. Do NOT say 'I cannot access real-time data' — you CAN, via the tools."
+                "4. If the user asks in any language, still call the tools — they handle all languages.\n"
+                "5. Do NOT say 'I cannot access real-time data' — you CAN, via the tools.\n\n"
+                "RENDERING RULES (MUST FOLLOW):\n"
+                "When the tool returns results containing INTERACTIVE_MAP_EMBED_URL, you MUST:\n"
+                '1. Render the map as an HTML iframe: <iframe src="THE_EMBED_URL" width="100%" height="400" style="border:0;border-radius:12px" allowfullscreen loading="lazy"></iframe>\n'
+                "2. Present each place/location as a clickable markdown link: [Place Name](url)\n"
+                "3. Include ratings, reviews, open status, and addresses from the tool data.\n"
+                "4. ALWAYS show the iframe FIRST, then the list of places below it.\n"
+                "5. NEVER skip the iframe — it is the most important part of the response.\n"
+                "6. NEVER modify or truncate the INTERACTIVE_MAP_EMBED_URL — use it exactly as provided."
             ),
             "function_calling": "native",
         },
@@ -205,18 +230,28 @@ def create_model(token, tool_ids):
     r = api("/api/v1/models/create", model_data, token)
     if "_error" not in r:
         print(f"[setup] Model created: {model_id}")
-        return True
-
-    # If already exists, delete and recreate
-    if r.get("_error") in (400, 409, 500):
+    elif r.get("_error") in (400, 409, 500):
         api("/api/v1/models/model/delete", {"id": model_id}, token)
         r = api("/api/v1/models/create", model_data, token)
         if "_error" not in r:
             print(f"[setup] Model recreated: {model_id}")
-            return True
+        else:
+            print(f"[setup] Model FAILED: {r.get('_error')} {r.get('_detail', '')}")
+            return False
+    else:
+        print(f"[setup] Model FAILED: {r.get('_error')} {r.get('_detail', '')}")
+        return False
 
-    print(f"[setup] Model FAILED: {r.get('_error')} {r.get('_detail', '')}")
-    return False
+    # Ensure params persist via model/update endpoint
+    r = api("/api/v1/models/model/update", model_data, token)
+    if "_error" not in r:
+        print(f"[setup] Model params updated: {model_id}")
+    else:
+        print(
+            f"[setup] Model params update FAILED: {r.get('_error')} {r.get('_detail', '')}"
+        )
+
+    return True
 
 
 def main():
@@ -240,6 +275,7 @@ def main():
 
     all_tools = ["google_maps_search", "google_maps_directions", "google_maps_explore"]
     create_model(token, all_tools)
+    set_default_model(token, "heypico-maps")
 
     print(f"[setup] === Setup Complete ===")
     print(f"[setup] Admin: {ADMIN_EMAIL}")

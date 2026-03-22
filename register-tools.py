@@ -43,6 +43,7 @@ TOOLS_DIR = os.path.join(os.path.dirname(__file__), "openwebui-tools")
 BACKEND_API_KEY = os.getenv("BACKEND_API_KEY", "")
 GOOGLE_MAPS_API_KEY = os.getenv("GOOGLE_MAPS_API_KEY", "")
 BACKEND_URL = os.getenv("BACKEND_URL", "http://backend:8000")
+FRONTEND_URL = os.getenv("FRONTEND_URL", "http://localhost:3000")
 
 
 def api(path, data, token=None, method="POST"):
@@ -134,6 +135,7 @@ def main():
         # Configure Valves
         valves = {
             "backend_url": BACKEND_URL,
+            "frontend_url": FRONTEND_URL,
             "backend_api_key": BACKEND_API_KEY,
             "google_maps_api_key": GOOGLE_MAPS_API_KEY,
         }
@@ -145,6 +147,24 @@ def main():
             print(f"  Valves: FAILED {vr['_error']} {vr['_body'][:100]}")
         else:
             print("  Valves: configured")
+
+    # Set heypico-maps as default model
+    print("\nSetting default model to heypico-maps...")
+    r = api(
+        "/configs/models",
+        {
+            "DEFAULT_MODELS": "heypico-maps",
+            "DEFAULT_PINNED_MODELS": "",
+            "MODEL_ORDER_LIST": [],
+            "DEFAULT_MODEL_METADATA": {},
+            "DEFAULT_MODEL_PARAMS": {},
+        },
+        token,
+    )
+    if "_error" in r:
+        print(f"  FAILED: {r['_error']} {r.get('_body', '')[:200]}")
+    else:
+        print(f"  OK: default model = {r.get('DEFAULT_MODELS')}")
 
     print("\nDone!")
 

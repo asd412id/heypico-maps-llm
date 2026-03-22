@@ -118,30 +118,87 @@ async def explore_area(
     return result
 
 
+@router.get("/embed")
+async def embed_map(url: str, height: int = 450):
+    """
+    Serve Google Maps embed URL inside a properly-sized HTML wrapper.
+    Sends postMessage({type:'iframe:height', height}) so Open WebUI's
+    sandbox iframe auto-resizes to the correct height.
+    No API key required — accessed from the user's browser.
+    """
+    decoded = unquote(url)
+    if not re.match(
+        r"^https://(www\.|maps\.)?(google\.(com|co\.[a-z]+)|googleapis\.com)/",
+        decoded,
+    ):
+        return JSONResponse(status_code=400, content={"error": "Invalid URL"})
+
+    safe_url = decoded.replace("&", "&amp;").replace('"', "&quot;")
+    h = max(200, min(height, 800))
+
+    html = (
+        "<!DOCTYPE html><html><head>"
+        '<meta charset="UTF-8">'
+        '<meta name="viewport" content="width=device-width,initial-scale=1">'
+        "<style>"
+        "*{margin:0;padding:0;box-sizing:border-box}"
+        f"html,body{{height:{h}px;overflow:hidden}}"
+        f"iframe{{width:100%;height:{h}px;border:0;display:block}}"
+        "</style></head><body>"
+        f'<iframe src="{safe_url}" allowfullscreen loading="lazy" '
+        f'referrerpolicy="no-referrer-when-downgrade"></iframe>'
+        "<script>"
+        f"window.parent.postMessage({{type:'iframe:height',height:{h}}},'*');"
+        f"window.addEventListener('load',()=>window.parent.postMessage({{type:'iframe:height',height:{h}}},'*'));"
+        "</script>"
+        "</body></html>"
+    )
+
+    return HTMLResponse(content=html)
+
+
 @router.get("/open")
 async def open_maps_redirect(url: str):
     """
     Redirect page for Google Maps URLs.
     Breaks the Cross-Origin-Opener-Policy chain that blocks Google Maps
     when opened from Open WebUI (which sets COOP: same-origin).
+    Uses window.location.replace + COOP: unsafe-none to fully break the chain.
     No API key required — accessed from the user's browser.
     """
     decoded = unquote(url)
-    if not re.match(r"^https://(www\.google\.com|maps\.google\.com)/maps", decoded):
+    # Accept any google.com / google.co.* / googleapis.com maps URL
+    if not re.match(
+        r"^https://(www\.|maps\.)?(google\.(com|co\.[a-z]+)|googleapis\.com)/",
+        decoded,
+    ):
         return JSONResponse(status_code=400, content={"error": "Invalid URL"})
 
-    safe_url = decoded.replace('"', "%22").replace("'", "%27")
+    # Escape for safe embedding in JS string
+    safe_url = (
+        decoded.replace("\\", "\\\\")
+        .replace('"', '\\"')
+        .replace("'", "\\'")
+        .replace("<", "\\x3c")
+    )
+
+    html = (
+        "<!DOCTYPE html><html><head>"
+        '<meta charset="UTF-8">'
+        "<title>Opening Google Maps...</title>"
+        "</head><body>"
+        '<p style="font-family:sans-serif;text-align:center;margin-top:40vh">'
+        "Opening Google Maps...</p>"
+        "<script>"
+        f'window.location.replace("{safe_url}");'
+        "</script>"
+        "</body></html>"
+    )
 
     return HTMLResponse(
-        content=(
-            "<!DOCTYPE html><html><head>"
-            '<meta charset="UTF-8">'
-            f'<meta http-equiv="refresh" content="0;url={safe_url}">'
-            f"<title>Opening Google Maps...</title>"
-            '</head><body style="font-family:sans-serif;display:flex;'
-            "align-items:center;justify-content:center;height:100vh;"
-            'margin:0;background:#f8f9fa">'
-            "<p>Opening Google Maps...</p>"
-            "</body></html>"
-        )
+        content=html,
+        headers={
+            "Cross-Origin-Opener-Policy": "unsafe-none",
+            "Cross-Origin-Embedder-Policy": "unsafe-none",
+        },
     )

@@ -2,7 +2,7 @@
 title: Google Maps Directions
 description: Get turn-by-turn directions between two locations with an embedded interactive map in chat.
 author: HeyPico AI Test
-version: 1.0.0
+version: 2.0.0
 license: MIT
 requirements: httpx
 """
@@ -11,21 +11,30 @@ import httpx
 import os
 import urllib.parse
 from pydantic import BaseModel, Field
-from typing import Optional, Literal
-from fastapi.responses import HTMLResponse
+from typing import Literal
 
 
-def _redirect_url(backend_url: str, target_url: str) -> str:
-    """Route Google Maps URL through backend redirect to bypass COOP."""
-    pub = backend_url.replace("://backend:", "://localhost:")
-    return f"{pub}/maps/open?url={urllib.parse.quote(target_url, safe='')}"
+def _redirect_url(frontend_url: str, target_url: str) -> str:
+    """Route Google Maps URL through /api/maps/open to bypass COOP."""
+    base = frontend_url.rstrip("/")
+    return f"{base}/api/maps/open?url={urllib.parse.quote(target_url, safe='')}"
+
+
+def _embed_url(frontend_url: str, maps_embed_url: str, height: int = 450) -> str:
+    """Wrap a Google Maps embed URL via /api/maps/embed wrapper."""
+    base = frontend_url.rstrip("/")
+    return f"{base}/api/maps/embed?url={urllib.parse.quote(maps_embed_url, safe='')}&height={height}"
 
 
 class Tools:
     class Valves(BaseModel):
         backend_url: str = Field(
             default="http://backend:8000",
-            description="URL of the HeyPico Maps Backend API",
+            description="Internal URL of the HeyPico Maps Backend API (docker network)",
+        )
+        frontend_url: str = Field(
+            default="http://localhost:3000",
+            description="Public-facing URL of the web UI (used for embed/redirect links in chat)",
         )
         backend_api_key: str = Field(
             default="",
@@ -39,6 +48,7 @@ class Tools:
     def __init__(self):
         self.valves = self.Valves(
             backend_url=os.getenv("BACKEND_URL", "http://backend:8000"),
+            frontend_url=os.getenv("FRONTEND_URL", "http://localhost:3000"),
             backend_api_key=os.getenv("BACKEND_API_KEY", ""),
             google_maps_api_key=os.getenv("GOOGLE_MAPS_API_KEY", ""),
         )
@@ -109,162 +119,57 @@ class Tools:
                 }
             )
 
-        # Build redirect helper for Google Maps links
-        redirect = lambda url: _redirect_url(self.valves.backend_url, url)
+        redirect = lambda url: _redirect_url(self.valves.frontend_url, url)
 
-        # Emit clickable Google Maps link as markdown in chat (outside iframe)
-        if __event_emitter__:
-            maps_url = redirect(data.get("maps_url", ""))
+        mode_icons = {
+            "driving": "🚗",
+            "walking": "🚶",
+            "transit": "🚌",
+            "bicycling": "🚲",
+        }
+        mode_icon = mode_icons.get(travel_mode, "🗺️")
+
+        maps_url = redirect(data.get("maps_url", ""))
+        embed_url = data.get("embed_url", "")
+        origin_addr = data.get("origin_address", origin)
+        dest_addr = data.get("destination_address", destination)
+
+        # Wrap in backend proxy so the iframe auto-resizes via postMessage
+        wrapper_url = (
+            _embed_url(self.valves.frontend_url, embed_url) if embed_url else ""
+        )
+
+        # Emit the interactive map as an embed (rendered as sandboxed iframe by Open WebUI)
+        if __event_emitter__ and wrapper_url:
             await __event_emitter__(
                 {
-                    "type": "message",
-                    "data": {
-                        "content": (
-                            f"\n\n**🗺️ Directions: {data.get('origin_address', origin)} → {data.get('destination_address', destination)}**\n"
-                            f"📏 {data['total_distance']} · ⏱️ {data['total_duration']}\n\n"
-                            f"[🔗 Open Full Route in Google Maps]({maps_url})\n"
-                        )
-                    },
+                    "type": "embeds",
+                    "data": {"embeds": [wrapper_url]},
                 }
             )
 
-        # Wrap Google Maps URL through redirect
-        data["maps_url"] = redirect(data.get("maps_url", ""))
+        import re
 
-        html = _build_directions_html(
-            data, travel_mode, self.valves.google_maps_api_key
+        lines = []
+        lines.append(f"{mode_icon} Directions: {origin_addr} → {dest_addr}")
+        lines.append(
+            f"Distance: {data['total_distance']} · Duration: {data['total_duration']}"
         )
-        return HTMLResponse(
-            content=html,
-            headers={"Content-Disposition": "inline"},
-        )
+        lines.append(f"[🗺️ Open in Google Maps]({maps_url})")
+        lines.append("")
 
+        steps = data.get("steps", [])
+        if steps:
+            lines.append(f"Route ({len(steps)} steps):")
+            for i, step in enumerate(steps):
+                instruction = re.sub(r"<[^>]+>", "", step.get("html_instructions", ""))
+                dist = step.get("distance", "")
+                dur = step.get("duration", "")
+                lines.append(f"  {i + 1}. {instruction} ({dist}, {dur})")
+            lines.append("")
 
-def _build_directions_html(data: dict, travel_mode: str, api_key: str) -> str:
-    """Build a rich HTML page with embedded directions map and step-by-step instructions."""
-
-    mode_icons = {
-        "driving": "🚗",
-        "walking": "🚶",
-        "transit": "🚌",
-        "bicycling": "🚲",
-    }
-    mode_icon = mode_icons.get(travel_mode, "🗺️")
-
-    # Build embed URL for the directions iframe
-    embed_url = data.get("embed_url", "")
-    maps_url = data.get("maps_url", "")
-
-    # Strip API key from embed_url before including in HTML
-    # (iframe embed is fine — browsers don't expose it to users, but it's in page source)
-    # Best practice: use Maps Embed API key restricted to your domain
-    embed_src = embed_url if embed_url else ""
-
-    # Build steps HTML
-    steps_html = ""
-    for i, step in enumerate(data.get("steps", [])):
-        step_icon = mode_icons.get(step.get("travel_mode", travel_mode), "➤")
-        # Strip HTML tags from instructions for clean display
-        raw_instructions = step.get("html_instructions", "")
-        # We'll keep it as HTML since it contains formatting like <b> tags
-        steps_html += f"""
-        <div class="step">
-          <div class="step-num">{i + 1}</div>
-          <div class="step-body">
-            <div class="step-text">{raw_instructions}</div>
-            <div class="step-meta">
-              <span>{step.get("distance", "")}</span>
-              <span>·</span>
-              <span>{step.get("duration", "")}</span>
-            </div>
-          </div>
-        </div>"""
-
-    if not steps_html:
-        steps_html = (
-            "<p style='color:#666;padding:10px'>No detailed steps available.</p>"
+        lines.append(
+            "Present the directions above with the clickable Google Maps link."
         )
 
-    origin_addr = data.get("origin_address", "")
-    dest_addr = data.get("destination_address", "")
-    distance = data.get("total_distance", "")
-    duration = data.get("total_duration", "")
-
-    return f"""<!DOCTYPE html>
-<html lang="en">
-<head>
-<meta charset="UTF-8"/>
-<meta name="viewport" content="width=device-width, initial-scale=1.0"/>
-<style>
-  * {{ box-sizing: border-box; margin: 0; padding: 0; }}
-  body {{ font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: #f8f9fa; color: #1a1a2e; padding: 12px; }}
-  .header {{ background: linear-gradient(135deg, #34a853, #137333); color: white; padding: 16px 20px; border-radius: 12px; margin-bottom: 14px; }}
-  .header h2 {{ font-size: 17px; font-weight: 600; margin-bottom: 6px; }}
-  .route-meta {{ display: flex; gap: 16px; margin-top: 8px; flex-wrap: wrap; }}
-  .route-badge {{ background: rgba(255,255,255,0.2); padding: 5px 12px; border-radius: 20px; font-size: 13px; font-weight: 500; }}
-  .origin-dest {{ margin-bottom: 14px; display: flex; flex-direction: column; gap: 6px; }}
-  .point-row {{ display: flex; align-items: center; gap: 10px; background: white; padding: 10px 14px; border-radius: 8px; box-shadow: 0 1px 4px rgba(0,0,0,0.06); }}
-  .point-dot {{ width: 12px; height: 12px; border-radius: 50%; flex-shrink: 0; }}
-  .dot-origin {{ background: #34a853; }}
-  .dot-dest {{ background: #ea4335; }}
-  .point-text {{ font-size: 13px; color: #444; }}
-  .map-iframe-container {{ border-radius: 12px; overflow: hidden; margin-bottom: 14px; box-shadow: 0 2px 12px rgba(0,0,0,0.15); }}
-  .map-iframe {{ width: 100%; height: 300px; border: none; display: block; }}
-  .open-btn {{ display: block; text-align: center; background: #34a853; color: white; text-decoration: none; padding: 10px 16px; border-radius: 8px; font-size: 14px; font-weight: 500; margin-bottom: 14px; }}
-  .open-btn:hover {{ background: #2d8f47; }}
-  .steps-header {{ font-size: 14px; font-weight: 600; color: #1a1a2e; margin-bottom: 8px; padding: 0 2px; }}
-  .steps-list {{ background: white; border-radius: 10px; overflow: hidden; box-shadow: 0 1px 6px rgba(0,0,0,0.06); }}
-  .step {{ display: flex; gap: 12px; padding: 12px 14px; border-bottom: 1px solid #f0f0f0; align-items: flex-start; }}
-  .step:last-child {{ border-bottom: none; }}
-  .step-num {{ background: #1a73e8; color: white; width: 22px; height: 22px; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-size: 11px; font-weight: 700; flex-shrink: 0; margin-top: 2px; }}
-  .step-body {{ flex: 1; }}
-  .step-text {{ font-size: 13px; color: #333; line-height: 1.4; }}
-  .step-text b {{ color: #1a1a2e; }}
-  .step-meta {{ font-size: 12px; color: #888; margin-top: 4px; display: flex; gap: 6px; }}
-</style>
-</head>
-<body>
-<div class="header">
-  <h2>{mode_icon} Directions by {travel_mode.title()}</h2>
-  <div class="route-meta">
-    <span class="route-badge">📏 {distance}</span>
-    <span class="route-badge">⏱️ {duration}</span>
-  </div>
-</div>
-
-<div class="origin-dest">
-  <div class="point-row">
-    <div class="point-dot dot-origin"></div>
-    <div class="point-text"><strong>From:</strong> {origin_addr}</div>
-  </div>
-  <div class="point-row">
-    <div class="point-dot dot-dest"></div>
-    <div class="point-text"><strong>To:</strong> {dest_addr}</div>
-  </div>
-</div>
-
-<div class="map-iframe-container">
-  <iframe class="map-iframe" src="{embed_src}" allowfullscreen loading="lazy" referrerpolicy="no-referrer-when-downgrade"></iframe>
-</div>
-
-<a class="open-btn" href="{maps_url}" target="_blank" rel="noopener">
-  🗺️ Open Full Route in Google Maps
-</a>
-
-<div class="steps-header">📋 Step-by-step directions ({len(data.get("steps", []))} steps)</div>
-<div class="steps-list">
-  {steps_html}
-</div>
-
-<script>
-  function reportHeight() {{
-    window.parent.postMessage({{ type: 'iframe:height', height: document.documentElement.scrollHeight }}, '*');
-  }}
-  window.addEventListener('load', reportHeight);
-  window.addEventListener('resize', reportHeight);
-  setTimeout(reportHeight, 300);
-  setTimeout(reportHeight, 1000);
-
-</script>
-</body>
-</html>"""
+        return "\n".join(lines)
