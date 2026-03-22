@@ -24,26 +24,78 @@ This document explains the key design decisions and assumptions made during the 
 
 **Reasoning:**
 - Open WebUI Tools run as Python on the Open WebUI server — no extra infrastructure
-- Tools return `HTMLResponse` that Open WebUI renders as interactive iframes in chat
-- This enables **embedded Google Maps directly in chat** — the core UX requirement
+- Tools emit `type:"embeds"` events that Open WebUI renders as interactive iframes in chat
+- Tools return markdown text that the LLM uses to present structured place results
 - MCP would require an additional server and more complex setup
 - Tools integrate natively with Qwen's tool-calling capability via `function_calling: native`
 
 ---
 
-## 3. HTMLResponse for Rich Map Rendering
+## 3. type:"embeds" + Markdown Text (Not HTMLResponse)
 
-**Assumption:** Tools return `HTMLResponse` (from `fastapi.responses`) instead of plain HTML strings.
+**Assumption:** Tools use `type:"embeds"` event emitter for the map iframe and return markdown text (not `HTMLResponse`).
 
 **Reasoning:**
-- Open WebUI's middleware detects `HTMLResponse` return type and auto-renders it as an iframe embed
-- Plain string HTML is shown as raw text; `HTMLResponse` triggers the iframe rendering pipeline
-- The `Content-Disposition: inline` header ensures proper display
-- When a tool returns `HTMLResponse`, Open WebUI replaces the tool result sent to the LLM with a brief "UI active" message, preventing the LLM from seeing raw HTML
+- `type:"embeds"` is Open WebUI's native embed system — renders the map URL as a sandboxed iframe directly in chat
+- Markdown text is passed to the LLM so it can present place names, ratings, and clickable Google Maps links in a natural conversational way
+- `HTMLResponse` was found to be unreliable in some Open WebUI versions and is no longer used
+- The combination of `embeds` (visual map) + markdown (text list) gives the best UX
 
 ---
 
-## 4. Fully Automated Setup (No Manual UI Steps)
+## 4. Nginx Reverse Proxy (Single Entry Point)
+
+**Assumption:** Nginx sits in front of Open WebUI and the backend as a single public entry point on port 3000.
+
+**Routing:**
+```
+localhost:3000/api/maps/*  →  backend:8000/maps/*
+localhost:3000/*           →  open-webui:8080
+```
+
+**Reasoning:**
+- The backend has endpoints that must be accessible from the browser (for iframe rendering) without an API key: `/maps/embed` and `/maps/open`
+- These must be on the same origin as Open WebUI to avoid CORS issues
+- Nginx routes them cleanly without exposing the backend's other internal endpoints
+- Open WebUI and the backend have no public ports — all traffic goes through nginx
+
+---
+
+## 5. Two URL Valves: backend_url and frontend_url
+
+**Assumption:** Each tool has two URL valves:
+
+| Valve | Default | Used for |
+|-------|---------|----------|
+| `backend_url` | `http://backend:8000` | Server-side API calls (tool → backend over Docker network) |
+| `frontend_url` | `http://localhost:3000` | Browser-side embed/redirect URLs sent to the user's browser |
+
+**Reasoning:**
+- Server-side calls use the internal Docker network hostname (`backend:8000`)
+- Browser-side URLs must use the public URL (via nginx) because they are rendered in the user's browser
+- Using `backend:8000` in browser-side URLs would fail (user's browser can't reach Docker internal network)
+- `FRONTEND_URL` in `.env` sets both valves automatically; change it for production deployments
+
+---
+
+## 6. /maps/embed and /maps/open Endpoints
+
+**Assumption:** Two public (no API key) endpoints are served via nginx → backend:
+
+### `/maps/embed?url=...&height=450`
+- Returns an HTML page that wraps the Google Maps embed iframe
+- Sends `postMessage({type:'iframe:height', height})` to the Open WebUI parent frame so the embed auto-resizes
+- The URL must be a valid `google.com` or `googleapis.com` URL (validated server-side)
+
+### `/maps/open?url=...`
+- Returns an HTML page that redirects to a Google Maps URL
+- Serves with `Cross-Origin-Opener-Policy: unsafe-none` to break the COOP chain
+- Open WebUI sets `COOP: same-origin` on all its pages, which blocks Google Maps from opening normally; this endpoint breaks that chain
+- Uses `window.location.replace()` to navigate without creating a popup (no `allow-popups` sandbox permission needed)
+
+---
+
+## 7. Fully Automated Setup (No Manual UI Steps)
 
 **Assumption:** The entire setup — admin account, tool registration, valve configuration, model creation — is automated via API.
 
@@ -56,7 +108,7 @@ This document explains the key design decisions and assumptions made during the 
 
 ---
 
-## 5. Backend Proxy Pattern (Security-First)
+## 8. Backend Proxy Pattern (Security-First)
 
 **Assumption:** The Google Maps API key is NEVER passed to the LLM or browser. All Maps API calls go through the FastAPI backend proxy.
 
@@ -64,13 +116,13 @@ This document explains the key design decisions and assumptions made during the 
 - If the API key were in the Open WebUI tool configuration, it could be exposed in logs, browser DevTools, or prompt injection attacks
 - The proxy pattern is a security best practice for third-party API keys
 - The backend uses a separate `BACKEND_API_KEY` to authenticate requests from the tools
-- This follows the principle of least privilege
+- The backend has **no public port** — only nginx and the Docker internal network can reach it
 
-**Note:** The Google Maps API key is still used in `photo_url` and `embed_url` responses (for Static Maps/Embed API), as these URLs are rendered client-side. In production, use a domain-restricted API key for these.
+**Note:** The Google Maps API key IS used in `embed_url` responses (for Maps Embed API iframe `src`). This URL is rendered client-side by the browser. In production, use an HTTP-referrer-restricted API key for Maps Embed.
 
 ---
 
-## 6. Google Maps APIs Used
+## 9. Google Maps APIs Used
 
 **Assumption:** The following APIs are enabled on the Google Cloud project:
 
@@ -79,14 +131,15 @@ This document explains the key design decisions and assumptions made during the 
 | Places API (New) | Text search for places (`/places:searchText`) |
 | Directions API | Turn-by-turn route calculation |
 | Geocoding API | Convert addresses to lat/lng coordinates |
-| Maps Embed API | Interactive directions iframe |
-| Static Maps API | Overview map images with numbered markers |
+| Maps Embed API | Interactive map iframe in chat |
+
+> **Static Maps API is no longer used.** It was previously used for overview images but has been replaced by the Maps Embed API for a better interactive experience.
 
 **Note:** Places API (New) is used instead of the legacy Places API for future-proof compatibility. It uses field masks for efficient data fetching.
 
 ---
 
-## 7. Redis Caching
+## 10. Redis Caching
 
 **Assumption:** Redis is used for caching API responses with these TTLs:
 
@@ -100,7 +153,7 @@ This document explains the key design decisions and assumptions made during the 
 
 ---
 
-## 8. Rate Limiting
+## 11. Rate Limiting
 
 **Assumption:** Rate limits are set at 60 requests/minute and 1000 requests/day.
 
@@ -112,21 +165,29 @@ This document explains the key design decisions and assumptions made during the 
 
 ---
 
-## 9. Docker Compose for Local Deployment
+## 12. Docker Compose for Local Deployment
 
-**Assumption:** The project uses Docker Compose with 4 services to run everything locally.
+**Assumption:** The project uses Docker Compose with **5 services** to run everything locally.
 
-**Services:** Ollama (LLM), Redis (cache), Backend (FastAPI), Open WebUI (chat UI + tool orchestrator)
+**Services:**
+| Service | Role |
+|---------|------|
+| Nginx | Reverse proxy, single public port 3000 |
+| Open WebUI | Chat UI + tool orchestrator |
+| Backend (FastAPI) | Google Maps API proxy |
+| Ollama | Local LLM runtime |
+| Redis | Response cache |
 
 **Reasoning:**
 - One-command setup: `docker compose up -d`
 - Reproducible environment for reviewers
 - Services communicate over Docker network (no port conflicts)
+- Nginx as single entry point ensures `/api/maps/*` and Open WebUI share the same origin (no CORS)
 - GPU support enabled by default (can be removed for CPU-only)
 
 ---
 
-## 10. Native Tool Calling
+## 13. Native Tool Calling
 
 **Assumption:** The `heypico-maps` model uses `function_calling: native` (not prompt-based).
 
@@ -138,7 +199,7 @@ This document explains the key design decisions and assumptions made during the 
 
 ---
 
-## 11. Delete + Recreate Pattern for Tool Updates
+## 14. Delete + Recreate Pattern for Tool Updates
 
 **Assumption:** When updating tools, we delete the existing tool and recreate it instead of using PUT/POST update.
 
@@ -149,7 +210,7 @@ This document explains the key design decisions and assumptions made during the 
 
 ---
 
-## 12. No GPU Required (But Recommended)
+## 15. No GPU Required (But Recommended)
 
 **Assumption:** The project works on CPU-only machines.
 

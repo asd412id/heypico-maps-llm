@@ -14,36 +14,63 @@ Ask the LLM things like:
 - *"Explore cafes in Bandung Old Town"*
 - *"Find tourist attractions near Seminyak Bali"*
 
-The LLM detects the intent, calls the appropriate Google Maps tool via **native function calling**, and returns an **interactive map + place cards / directions** embedded right in the chat.
+The LLM detects the intent, calls the appropriate Google Maps tool via **native function calling**, and returns an **interactive embedded map** right in the chat along with a list of places with clickable Google Maps links.
 
 ---
 
 ## Architecture
 
 ```
-┌───────────────────────────────────────────────────────────┐
-│                   Open WebUI (port 3000)                  │
-│  Chat UI → HeyPico Maps model (qwen2.5:7b via Ollama)    │
-│             ↕ native function calling                     │
-│           3 Tools → HTMLResponse → embedded map iframes   │
-└───────────────────────────────────────────────────────────┘
-           ↕ (internal, API-key protected)
-┌───────────────────────────────────────────────────────────┐
-│              FastAPI Backend (port 8000)                   │
-│  • Google Maps API Proxy (API key never exposed to LLM)   │
-│  • Rate Limiting (SlowAPI)                                │
-│  • Response Caching (Redis)                               │
-│  • Input Sanitization                                     │
-└───────────────────────────────────────────────────────────┘
-           ↕
-┌───────────────────────────────────────────────────────────┐
-│                   Google Maps APIs                        │
-│  • Places API (New) — search places                       │
-│  • Directions API — turn-by-turn routes                   │
-│  • Geocoding API — address → coordinates                  │
-│  • Maps Embed API — interactive iframe                    │
-│  • Static Maps API — overview images                      │
-└───────────────────────────────────────────────────────────┘
+Browser
+  └── http://localhost:3000
+          │
+          ▼
+┌─────────────────────────────────────────────────────────────┐
+│                  Nginx (port 3000)                           │
+│           Single public entry point                          │
+│  /api/maps/*  ──────────────────────► backend:8000/maps/*   │
+│  /*           ──────────────────────► open-webui:8080        │
+└─────────────────────────────────────────────────────────────┘
+          │                                      │
+          ▼                                      ▼
+┌─────────────────────┐              ┌──────────────────────────┐
+│ Open WebUI :8080    │              │ FastAPI Backend :8000     │
+│ Chat UI             │              │ Google Maps API Proxy     │
+│ HeyPico Maps model  │              │ • Rate Limiting           │
+│ (qwen2.5:7b)        │              │ • Response Caching        │
+│ 3 custom tools      │              │ • Input Sanitization      │
+│ native tool calling │              │ • /maps/embed  (public)   │
+└─────────────────────┘              │ • /maps/open   (public)   │
+          │                          └──────────────────────────┘
+          │ (internal, API-key protected)          │
+          └─────────────────────────────────────┐  │
+                                                 ▼  ▼
+                                    ┌──────────────────────────┐
+                                    │    Google Maps APIs       │
+                                    │ • Places API (New)        │
+                                    │ • Directions API          │
+                                    │ • Geocoding API           │
+                                    │ • Maps Embed API          │
+                                    └──────────────────────────┘
+```
+
+### How tool results are displayed
+
+```
+LLM calls tool
+    │
+    ▼
+Tool calls backend /maps/search|directions|explore (internal, API-key protected)
+    │
+    ▼
+Tool emits type:"embeds" event  ──► Open WebUI renders iframe
+    │                                  src = localhost:3000/api/maps/embed?url=...
+    │                                  (nginx → backend → HTML wrapper page)
+    ▼
+Tool returns markdown text to LLM (place list with clickable Google Maps links)
+    │
+    ▼
+LLM presents map + place list in chat
 ```
 
 ---
@@ -67,13 +94,19 @@ cd heypico-maps-llm
 cp .env.example .env
 
 # Edit .env and add your keys
-# Required: GOOGLE_MAPS_API_KEY, BACKEND_API_KEY, WEBUI_SECRET_KEY
 nano .env   # or open in your text editor
 ```
 
-Generate secret keys:
+Required values in `.env`:
 ```bash
-python -c "import secrets; print(secrets.token_hex(32))"
+GOOGLE_MAPS_API_KEY=AIzaSy...your_actual_key_here...
+
+# Generate these with: python -c "import secrets; print(secrets.token_hex(32))"
+BACKEND_API_KEY=your_random_secret
+WEBUI_SECRET_KEY=your_random_secret
+
+# Public URL for browser-facing map embed/redirect links (default: http://localhost:3000)
+FRONTEND_URL=http://localhost:3000
 ```
 
 ### 3. Start Everything
@@ -86,10 +119,11 @@ This will automatically:
 1. Start Ollama and pull **Qwen 2.5 7B** model (~4.7 GB)
 2. Start Redis (cache layer)
 3. Start FastAPI backend (Google Maps proxy)
-4. Start Open WebUI on port 3000
-5. **Auto-register** all 3 Google Maps tools
-6. **Auto-configure** tool valves (API keys, backend URL)
-7. **Auto-create** `heypico-maps` model with native tool calling enabled
+4. Start Open WebUI
+5. Start **Nginx** (single public entry point on port 3000)
+6. **Auto-register** all 3 Google Maps tools
+7. **Auto-configure** tool valves (API keys, backend URL, frontend URL)
+8. **Auto-create** `heypico-maps` model with native tool calling enabled
 
 **First run takes 5-10 minutes** while the model downloads. No manual UI setup required.
 
@@ -122,7 +156,14 @@ python register-tools.py
 
 ## API Endpoints
 
-The backend exposes these endpoints (secured by API key):
+### Public endpoints (no API key — accessed from browser via nginx)
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| GET | `/api/maps/embed?url=...&height=450` | HTML wrapper for Google Maps iframe with postMessage auto-resize |
+| GET | `/api/maps/open?url=...` | Redirect page that bypasses COOP to open Google Maps in new tab |
+
+### Internal endpoints (require `X-API-Key` header)
 
 | Method | Endpoint | Description |
 |--------|----------|-------------|
@@ -133,6 +174,8 @@ The backend exposes these endpoints (secured by API key):
 | POST | `/maps/geocode` | Convert address to coordinates |
 | POST | `/maps/explore` | Explore an area by category |
 
+> Internal endpoints are called server-side (tool → backend over Docker network). They are not accessible from the browser because the backend has no public port — only nginx can reach it.
+
 Docs available at `http://localhost:8000/docs` (only when `DEBUG=true`).
 
 ---
@@ -141,6 +184,7 @@ Docs available at `http://localhost:8000/docs` (only when `DEBUG=true`).
 
 - **API key never exposed** — The Google Maps API key lives only in the backend `.env` file. It never reaches the LLM context.
 - **Internal authentication** — Tools authenticate to backend using `X-API-Key` header with a separate `BACKEND_API_KEY`.
+- **No public backend port** — The FastAPI backend is only accessible via nginx (`/api/maps/*`) or internally over the Docker network. Direct access to `:8000` is not possible.
 - **Rate limiting** — Configurable per-minute and per-day limits prevent quota abuse.
 - **Input sanitization** — All LLM-generated queries are sanitized before hitting Google APIs.
 - **CORS restriction** — Backend only accepts requests from known origins (Open WebUI).
@@ -152,19 +196,22 @@ Docs available at `http://localhost:8000/docs` (only when `DEBUG=true`).
 
 ```
 heypico-maps-llm/
-├── docker-compose.yml          # All services orchestration
+├── docker-compose.yml          # All services orchestration (5 services)
 ├── .env.example                # Environment variable template
 ├── .gitignore
 ├── README.md
 ├── register-tools.py           # Standalone tool registration script
 │
-├── backend/                    # FastAPI backend
+├── nginx/
+│   └── nginx.conf              # Reverse proxy config (port 3000 entry point)
+│
+├── backend/                    # FastAPI backend (internal, no public port)
 │   ├── Dockerfile
 │   ├── requirements.txt
 │   ├── main.py                 # App entry point + CORS + rate limiting
 │   ├── config.py               # Settings from .env
 │   ├── routers/
-│   │   ├── maps.py             # Maps API endpoints
+│   │   ├── maps.py             # Maps API + /embed + /open endpoints
 │   │   └── health.py           # Health checks
 │   ├── services/
 │   │   ├── google_maps.py      # Google Maps API client
@@ -176,9 +223,9 @@ heypico-maps-llm/
 │       └── schemas.py          # Pydantic request/response models
 │
 ├── openwebui-tools/            # Open WebUI Custom Tools
-│   ├── google_maps_search.py   # Tool: Search places → HTMLResponse
-│   ├── google_maps_directions.py # Tool: Directions → HTMLResponse
-│   └── google_maps_explore.py  # Tool: Explore area → HTMLResponse
+│   ├── google_maps_search.py   # Tool: Search places
+│   ├── google_maps_directions.py # Tool: Directions
+│   └── google_maps_explore.py  # Tool: Explore area by category
 │
 ├── setup/                      # Auto-setup (runs on first boot)
 │   ├── entrypoint.sh           # Entrypoint wrapper for Open WebUI
@@ -198,12 +245,25 @@ heypico-maps-llm/
 | LLM | Qwen 2.5 7B (via Ollama) |
 | Tool Calling | Native function calling (`function_calling: native`) |
 | LLM UI | Open WebUI |
-| Tool Output | HTMLResponse → rendered as iframe in chat |
+| Tool Output | `type:"embeds"` event emitter (iframe) + markdown text |
 | Backend API | Python FastAPI |
+| Reverse Proxy | Nginx (single public entry point) |
 | Cache | Redis 7 |
-| Maps | Google Maps Platform (Places API New, Directions, Geocoding, Static Maps, Embed) |
-| Containerization | Docker Compose (4 services) |
+| Maps | Google Maps Platform (Places API New, Directions, Geocoding, Embed) |
+| Containerization | Docker Compose (5 services) |
 | Rate Limiting | SlowAPI |
+
+---
+
+## Services
+
+| Service | Internal Port | Public Access | Description |
+|---------|--------------|---------------|-------------|
+| Nginx | 80 | **http://localhost:3000** | Single entry point (reverse proxy) |
+| Open WebUI | 8080 | via nginx | Chat interface |
+| FastAPI Backend | 8000 | via nginx `/api/maps/*` | Maps API proxy |
+| Ollama | 11434 | internal only | LLM runtime |
+| Redis | 6379 | internal only | Response cache |
 
 ---
 
@@ -215,14 +275,20 @@ heypico-maps-llm/
 **"Invalid API key" errors:**
 → Check your `.env` has correct `GOOGLE_MAPS_API_KEY` and `BACKEND_API_KEY`.
 
-**Map images not showing:**
-→ Your Google Maps API key must have **Static Maps API** and **Maps Embed API** enabled.
+**Map not showing (blocked/error icon):**
+→ Verify **Maps Embed API** is enabled in Google Cloud Console. The API key must be allowed for your domain/localhost.
+
+**Map links open in same tab or show COOP error:**
+→ Open WebUI iframe sandbox settings: enable **"iframe Sandbox Allow Same Origin"** in Open WebUI → Settings → Interface.
 
 **Docker GPU error:**
 → Remove the `deploy.resources.reservations` block from `docker-compose.yml` if you don't have an NVIDIA GPU. The model runs on CPU (slower but functional).
 
 **Tools not auto-registered:**
 → Check logs: `docker compose logs open-webui | grep setup`. If the setup script timed out, run `python register-tools.py` manually.
+
+**`FRONTEND_URL` wrong (embed links broken):**
+→ If deployed on a server, set `FRONTEND_URL=https://your-domain.com` in `.env` so embed/redirect URLs use the correct public URL.
 
 ---
 

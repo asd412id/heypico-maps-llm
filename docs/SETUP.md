@@ -29,7 +29,8 @@ Navigate to **APIs & Services → Library** and enable:
 2. **Directions API** — search: `Directions API`
 3. **Geocoding API** — search: `Geocoding API`
 4. **Maps Embed API** — search: `Maps Embed API`
-5. **Maps Static API** — search: `Maps Static API`
+
+> **Note:** Static Maps API is no longer used. The interactive map is now served via the Maps Embed API iframe.
 
 For each:
 - Click the API name
@@ -49,7 +50,7 @@ For each:
 
 1. Click on your newly created API key to edit it
 2. Under **Application restrictions**:
-   - For development: Choose **None** (or IP addresses → add `127.0.0.1`)
+   - For development: Choose **None** (or HTTP referrers → add `localhost`)
    - For production: Choose **HTTP referrers** → add your domain
 3. Under **API restrictions**:
    - Select **Restrict key**
@@ -58,7 +59,6 @@ For each:
      - Directions API
      - Geocoding API
      - Maps Embed API
-     - Maps Static API
 4. Click **Save**
 
 > ⚠️ **Never commit your API key to git.** The `.gitignore` already excludes `.env`.
@@ -80,7 +80,7 @@ For each:
 cp .env.example .env
 ```
 
-Edit `.env` — only 3 values need changing:
+Edit `.env` — only these values need changing:
 
 ```bash
 GOOGLE_MAPS_API_KEY=AIzaSy...your_actual_key_here...
@@ -88,6 +88,10 @@ GOOGLE_MAPS_API_KEY=AIzaSy...your_actual_key_here...
 # Generate these with: python -c "import secrets; print(secrets.token_hex(32))"
 BACKEND_API_KEY=your_random_secret
 WEBUI_SECRET_KEY=your_random_secret
+
+# Public URL of the web UI — used for browser-side embed/redirect links
+# Default is fine for local dev. Change this for server deployments.
+FRONTEND_URL=http://localhost:3000
 ```
 
 All other values have sensible defaults.
@@ -106,11 +110,12 @@ docker compose up -d
 |------|-------------|
 | 1 | Ollama starts and pulls `qwen2.5:7b` (~4.7 GB) |
 | 2 | Redis starts for response caching |
-| 3 | FastAPI backend starts with health checks |
-| 4 | Open WebUI starts on port 3000 |
-| 5 | `setup-tools.py` auto-creates admin account |
-| 6 | Auto-registers 3 Google Maps tools + configures valves |
-| 7 | Auto-creates `heypico-maps` model with native tool calling |
+| 3 | FastAPI backend starts (internal port 8000, not public) |
+| 4 | Open WebUI starts (internal port 8080, not public) |
+| 5 | **Nginx starts on port 3000** as single public entry point |
+| 6 | `setup-tools.py` auto-creates admin account |
+| 7 | Auto-registers 3 Google Maps tools + configures valves |
+| 8 | Auto-creates `heypico-maps` model with native tool calling |
 
 First run takes **5-10 minutes** (model download). Subsequent starts are ~30 seconds.
 
@@ -128,16 +133,33 @@ docker compose ps
 
 ## Services
 
-| Service | URL | Description |
-|---------|-----|-------------|
-| Open WebUI | http://localhost:3000 | Chat interface (auto-configured) |
-| FastAPI Backend | http://localhost:8000 | Maps API proxy |
-| Ollama | http://localhost:11434 | LLM runtime |
-| Redis | localhost:6379 | Cache |
+| Service | Internal Port | Public Access | Description |
+|---------|--------------|---------------|-------------|
+| Nginx | 80 | **http://localhost:3000** | Reverse proxy (single entry point) |
+| Open WebUI | 8080 | via nginx `/` | Chat interface (auto-configured) |
+| FastAPI Backend | 8000 | via nginx `/api/maps/*` | Maps API proxy |
+| Ollama | 11434 | internal only | LLM runtime |
+| Redis | 6379 | internal only | Cache |
+
+> The backend and Open WebUI no longer have public ports. All traffic goes through nginx on port 3000.
 
 ---
 
-## Step 9: Start Chatting
+## Step 9: Open WebUI Settings (One-time)
+
+After the stack is running, enable these iframe sandbox settings in Open WebUI for maps to work correctly:
+
+1. Open `http://localhost:3000`
+2. Go to **Settings → Interface**
+3. Enable **"iframe Sandbox Allow Same Origin"**
+4. Enable **"iframe Sandbox Allow Forms"** *(optional but recommended)*
+5. Save
+
+This allows the embedded Google Maps iframe to function correctly within Open WebUI's sandbox.
+
+---
+
+## Step 10: Start Chatting
 
 Open `http://localhost:3000`. The `heypico-maps` model is automatically selected.
 
@@ -169,7 +191,7 @@ If the auto-setup didn't run (e.g., timeout), you can register tools manually fr
 python register-tools.py
 ```
 
-This script reads credentials from `.env` and registers all 3 tools + configures valves via the Open WebUI API.
+This script reads credentials from `.env` and registers all 3 tools + configures valves via the Open WebUI API. It also sets `heypico-maps` as the default model.
 
 ---
 
@@ -188,9 +210,15 @@ docker compose logs backend
 # Usually missing GOOGLE_MAPS_API_KEY in .env
 ```
 
+### Map showing blocked/error icon
+- Verify **Maps Embed API** is enabled in Google Cloud
+- Check that your API key allows requests from `localhost` (HTTP referrer restrictions)
+- Ensure the key has Maps Embed API enabled under API restrictions
+
 ### Maps not showing in chat
-- Verify Static Maps API and Maps Embed API are enabled in Google Cloud
+- Verify Maps Embed API is enabled in Google Cloud
 - Check tool valves are configured: `docker compose logs open-webui | grep setup`
+- Make sure **"iframe Sandbox Allow Same Origin"** is enabled in Open WebUI Settings → Interface
 
 ### LLM not calling tools
 - Make sure the `heypico-maps` model is selected (not the base `qwen2.5:7b`)
@@ -200,6 +228,10 @@ docker compose logs backend
 ### Setup script timeout
 - If `docker compose logs open-webui | grep "Timeout"`, run `python register-tools.py` manually
 - The setup script waits up to 5 minutes for Open WebUI to be ready
+
+### Embed map links broken in production
+- Set `FRONTEND_URL=https://your-domain.com` in `.env` and run `python register-tools.py`
+- The `frontend_url` valve must match your actual public URL
 
 ---
 
