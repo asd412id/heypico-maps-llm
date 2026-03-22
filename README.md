@@ -59,7 +59,7 @@ The LLM detects the intent, calls the appropriate Google Maps tool, and returns 
 ### 2. Clone & Configure
 
 ```bash
-git clone <your-repo-url>
+git clone https://github.com/asd412id/heypico-maps-llm.git
 cd heypico-maps-llm
 
 # Copy environment template
