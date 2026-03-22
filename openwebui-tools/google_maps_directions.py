@@ -20,16 +20,10 @@ def _redirect_url(frontend_url: str, target_url: str) -> str:
     return f"{base}/api/maps/open?url={urllib.parse.quote(target_url, safe='')}"
 
 
-def _embed_url(
-    frontend_url: str, maps_embed_url: str, height: int = 450, open_url: str = ""
-) -> str:
-    """Wrap a Google Maps embed URL via /api/maps/embed wrapper.
-    open_url (optional): pre-proxied URL to intercept the 'Open in Maps' button."""
+def _embed_url(frontend_url: str, maps_embed_url: str, height: int = 450) -> str:
+    """Wrap a Google Maps embed URL via /api/maps/embed wrapper."""
     base = frontend_url.rstrip("/")
-    result = f"{base}/api/maps/embed?url={urllib.parse.quote(maps_embed_url, safe='')}&height={height}"
-    if open_url:
-        result += f"&open_url={urllib.parse.quote(open_url, safe='')}"
-    return result
+    return f"{base}/api/maps/embed?url={urllib.parse.quote(maps_embed_url, safe='')}&height={height}"
 
 
 class Tools:
@@ -140,11 +134,9 @@ class Tools:
         origin_addr = data.get("origin_address", origin)
         dest_addr = data.get("destination_address", destination)
 
-        # Wrap in backend proxy — pass maps_url as overlay so 'Open in Maps' routes via proxy
+        # Wrap in backend proxy so the iframe auto-resizes via postMessage
         wrapper_url = (
-            _embed_url(self.valves.frontend_url, embed_url, open_url=maps_url)
-            if embed_url
-            else ""
+            _embed_url(self.valves.frontend_url, embed_url) if embed_url else ""
         )
 
         # Emit the interactive map as an embed (rendered as sandboxed iframe by Open WebUI)
