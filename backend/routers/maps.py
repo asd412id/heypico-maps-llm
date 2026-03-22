@@ -119,11 +119,13 @@ async def explore_area(
 
 
 @router.get("/embed")
-async def embed_map(url: str, height: int = 450):
+async def embed_map(url: str, height: int = 450, open_url: str = ""):
     """
     Serve Google Maps embed URL inside a properly-sized HTML wrapper.
     Sends postMessage({type:'iframe:height', height}) so Open WebUI's
     sandbox iframe auto-resizes to the correct height.
+    If open_url is provided, an invisible overlay is placed over the
+    Google Maps 'Open in Maps' button so clicks route through our proxy.
     No API key required — accessed from the user's browser.
     """
     decoded = unquote(url)
@@ -136,6 +138,16 @@ async def embed_map(url: str, height: int = 450):
     safe_url = decoded.replace("&", "&amp;").replace('"', "&quot;")
     h = max(200, min(height, 800))
 
+    # Overlay anchor that intercepts the "Open in Maps" button (top-left of embed)
+    overlay_html = ""
+    if open_url:
+        safe_open = unquote(open_url).replace('"', "&quot;").replace("'", "&#39;")
+        overlay_html = (
+            f'<a href="{safe_open}" target="_blank" rel="noopener noreferrer" '
+            f'style="position:absolute;top:0;left:0;width:175px;height:54px;'
+            f'z-index:9999;display:block;cursor:pointer;"></a>'
+        )
+
     html = (
         "<!DOCTYPE html><html><head>"
         '<meta charset="UTF-8">'
@@ -143,10 +155,14 @@ async def embed_map(url: str, height: int = 450):
         "<style>"
         "*{margin:0;padding:0;box-sizing:border-box}"
         f"html,body{{height:{h}px;overflow:hidden}}"
+        f".wrap{{position:relative;width:100%;height:{h}px}}"
         f"iframe{{width:100%;height:{h}px;border:0;display:block}}"
         "</style></head><body>"
+        "<div class='wrap'>"
         f'<iframe src="{safe_url}" allowfullscreen loading="lazy" '
         f'referrerpolicy="no-referrer-when-downgrade"></iframe>'
+        f"{overlay_html}"
+        "</div>"
         "<script>"
         f"window.parent.postMessage({{type:'iframe:height',height:{h}}},'*');"
         f"window.addEventListener('load',()=>window.parent.postMessage({{type:'iframe:height',height:{h}}},'*'));"
