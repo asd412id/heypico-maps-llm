@@ -1,8 +1,6 @@
-version: "3.8"
-
 services:
   # ─────────────────────────────────────────────
-  # Ollama — Local LLM Runtime
+  # Ollama — Local LLM Runtime + Auto Model Pull
   # ─────────────────────────────────────────────
   ollama:
     image: ollama/ollama:latest
@@ -23,27 +21,13 @@ services:
             - driver: nvidia
               count: all
               capabilities: [gpu]
+    entrypoint: ["/bin/sh", "-c", "/bin/ollama serve & sleep 5 && ollama pull qwen2.5:7b; wait"]
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:11434/api/version"]
-      interval: 30s
+      test: ["CMD-SHELL", "ollama list | grep -q 'qwen2.5:7b'"]
+      interval: 15s
       timeout: 10s
-      retries: 5
-
-  # ─────────────────────────────────────────────
-  # Ollama Model Puller — Pull Qwen 3.5 on start
-  # ─────────────────────────────────────────────
-  ollama-pull:
-    image: ollama/ollama:latest
-    container_name: heypico-ollama-pull
-    depends_on:
-      ollama:
-        condition: service_healthy
-    environment:
-      - OLLAMA_HOST=http://ollama:11434
-    entrypoint: ["/bin/sh", "-c", "ollama pull qwen3.5:4b && echo 'Model ready'"]
-    volumes:
-      - ollama_data:/root/.ollama
-    restart: "no"
+      retries: 40
+      start_period: 30s
 
   # ─────────────────────────────────────────────
   # Redis — Cache Layer for Google Maps responses
@@ -91,6 +75,7 @@ services:
 
   # ─────────────────────────────────────────────
   # Open WebUI — Chat Frontend + Tool Orchestrator
+  # + Auto-registers tools & admin on first start
   # ─────────────────────────────────────────────
   open-webui:
     image: ghcr.io/open-webui/open-webui:main
@@ -98,13 +83,25 @@ services:
     restart: unless-stopped
     ports:
       - "3000:8080"
+    env_file:
+      - .env
     environment:
       - OLLAMA_BASE_URL=http://ollama:11434
       - WEBUI_SECRET_KEY=${WEBUI_SECRET_KEY}
-      - DEFAULT_MODELS=qwen3.5:4b
+      - DEFAULT_MODELS=heypico-maps
       - ENABLE_COMMUNITY_SHARING=false
       - ENABLE_MESSAGE_RATING=true
-      - TOOLS_FUNCTION_CALLING_PROMPT_TEMPLATE=""
+      - BACKEND_URL=http://backend:8000
+      - BACKEND_API_KEY=${BACKEND_API_KEY}
+      - GOOGLE_MAPS_API_KEY=${GOOGLE_MAPS_API_KEY}
+      - ADMIN_EMAIL=${ADMIN_EMAIL:-admin@heypico.ai}
+      - ADMIN_PASSWORD=${ADMIN_PASSWORD:-heypico2026}
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080"]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
     depends_on:
       ollama:
         condition: service_healthy
@@ -113,6 +110,8 @@ services:
     volumes:
       - open_webui_data:/app/backend/data
       - ./openwebui-tools:/app/backend/data/tools
+      - ./setup:/app/setup:ro
+    entrypoint: ["/bin/bash", "/app/setup/entrypoint.sh"]
 
 volumes:
   ollama_data:

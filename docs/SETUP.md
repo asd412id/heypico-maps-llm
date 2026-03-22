@@ -1,6 +1,6 @@
 # Setup Guide
 
-This guide walks you through setting up Google Cloud and getting your Maps API key.
+This guide walks you through the one-time Google Cloud setup and deploying the project.
 
 ---
 
@@ -80,72 +80,68 @@ For each:
 cp .env.example .env
 ```
 
-Edit `.env`:
+Edit `.env` — only 3 values need changing:
+
 ```bash
 GOOGLE_MAPS_API_KEY=AIzaSy...your_actual_key_here...
 
 # Generate these with: python -c "import secrets; print(secrets.token_hex(32))"
-BACKEND_API_KEY=your_random_32_char_secret
-WEBUI_SECRET_KEY=your_random_32_char_secret
+BACKEND_API_KEY=your_random_secret
+WEBUI_SECRET_KEY=your_random_secret
+```
+
+All other values have sensible defaults.
+
+---
+
+## Step 8: Deploy (One Command)
+
+```bash
+docker compose up -d
+```
+
+**That's it!** Everything is automated:
+
+| Step | What Happens |
+|------|-------------|
+| 1 | Ollama starts and pulls `qwen2.5:7b` (~4.7 GB) |
+| 2 | Redis starts for response caching |
+| 3 | FastAPI backend starts with health checks |
+| 4 | Open WebUI starts on port 3000 |
+| 5 | `setup-tools.py` auto-creates admin account |
+| 6 | Auto-registers 3 Google Maps tools + configures valves |
+| 7 | Auto-creates `heypico-maps` model with native tool calling |
+
+First run takes **5-10 minutes** (model download). Subsequent starts are ~30 seconds.
+
+Watch the progress:
+```bash
+docker compose logs -f
+```
+
+Check service status:
+```bash
+docker compose ps
 ```
 
 ---
 
-## Step 8: Start the Project
+## Services
 
-```bash
-# Build and start all services
-docker compose up -d
-
-# Watch logs (optional)
-docker compose logs -f
-
-# Check status
-docker compose ps
-```
-
-Services:
 | Service | URL | Description |
 |---------|-----|-------------|
-| Open WebUI | http://localhost:3000 | Chat interface |
+| Open WebUI | http://localhost:3000 | Chat interface (auto-configured) |
 | FastAPI Backend | http://localhost:8000 | Maps API proxy |
 | Ollama | http://localhost:11434 | LLM runtime |
 | Redis | localhost:6379 | Cache |
 
 ---
 
-## Step 9: Install Tools in Open WebUI
+## Step 9: Start Chatting
 
-1. Open `http://localhost:3000`
-2. Create admin account (first run only)
-3. Go to **Workspace → Tools → +**
-4. Install each tool from `openwebui-tools/`:
+Open `http://localhost:3000`. The `heypico-maps` model is automatically selected.
 
-**Tool 1: Google Maps Search**
-- Copy content of `openwebui-tools/google_maps_search.py`
-- Paste in tool editor → Save
-
-**Tool 2: Google Maps Directions**
-- Copy content of `openwebui-tools/google_maps_directions.py`
-- Paste → Save
-
-**Tool 3: Google Maps Explorer**
-- Copy content of `openwebui-tools/google_maps_explore.py`
-- Paste → Save
-
-5. For each tool, click **Edit → Valves** and configure:
-   - `backend_url`: `http://backend:8000`
-   - `backend_api_key`: (value from your `.env` BACKEND_API_KEY)
-   - `google_maps_api_key`: (value from your `.env` GOOGLE_MAPS_API_KEY)
-
----
-
-## Step 10: Test It!
-
-1. Start a new chat
-2. Select model: **qwen3.5:4b**
-3. Enable tools: click the tools icon → enable all 3 Maps tools
-4. Try these prompts:
+Try these prompts:
 
 ```
 Where should I eat dinner near SCBD Jakarta?
@@ -165,13 +161,25 @@ Find tourist attractions near Seminyak Bali
 
 ---
 
+## Manual Tool Registration (Optional)
+
+If the auto-setup didn't run (e.g., timeout), you can register tools manually from outside Docker:
+
+```bash
+python register-tools.py
+```
+
+This script reads credentials from `.env` and registers all 3 tools + configures valves via the Open WebUI API.
+
+---
+
 ## Troubleshooting
 
 ### Ollama model download stuck
 ```bash
-docker compose logs ollama-pull
-# If stuck, manually pull:
-docker exec -it heypico-ollama ollama pull qwen3.5:4b
+docker compose logs ollama
+# If stuck, restart the service:
+docker compose restart ollama
 ```
 
 ### Backend not starting
@@ -181,13 +189,17 @@ docker compose logs backend
 ```
 
 ### Maps not showing in chat
-- Make sure you configured **Valves** for each tool with your API key
-- Check Static Maps API and Maps Embed API are enabled in Google Cloud
+- Verify Static Maps API and Maps Embed API are enabled in Google Cloud
+- Check tool valves are configured: `docker compose logs open-webui | grep setup`
 
 ### LLM not calling tools
-- Make sure tools are **enabled** in the chat (click tools icon)
-- Try a more explicit prompt: *"Use the maps tool to find pizza near me"*
-- Qwen 3.5 has good tool-calling — it should detect intent automatically
+- Make sure the `heypico-maps` model is selected (not the base `qwen2.5:7b`)
+- The `heypico-maps` model has `function_calling: native` + tools pre-attached
+- Try a more explicit prompt: *"Use the maps tool to find pizza near Sudirman Jakarta"*
+
+### Setup script timeout
+- If `docker compose logs open-webui | grep "Timeout"`, run `python register-tools.py` manually
+- The setup script waits up to 5 minutes for Open WebUI to be ready
 
 ---
 
@@ -198,5 +210,5 @@ Check your Google Maps API usage at:
 
 Watch for:
 - Places API (New): charged per request
-- Directions API: charged per request  
-- Caching in this project significantly reduces API calls for repeated searches
+- Directions API: charged per request
+- Caching significantly reduces API calls for repeated searches

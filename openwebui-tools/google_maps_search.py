@@ -10,8 +10,16 @@ requirements: httpx
 import httpx
 import json
 import os
+import urllib.parse
 from pydantic import BaseModel, Field
 from typing import Optional
+from fastapi.responses import HTMLResponse
+
+
+def _redirect_url(backend_url: str, target_url: str) -> str:
+    """Route Google Maps URL through backend redirect to bypass COOP."""
+    pub = backend_url.replace("://backend:", "://localhost:")
+    return f"{pub}/maps/open?url={urllib.parse.quote(target_url, safe='')}"
 
 
 class Tools:
@@ -124,26 +132,50 @@ class Tools:
                 }
             )
 
+        # Build redirect helper for Google Maps links
+        redirect = lambda url: _redirect_url(self.valves.backend_url, url)
+
+        # Emit clickable Google Maps links as markdown in chat (outside iframe)
+        if __event_emitter__:
+            location_label = f" near {location}" if location else ""
+            links_md = "\n".join(
+                f"{i + 1}. [{p['name']}]({redirect(p['maps_url'])})"
+                for i, p in enumerate(places)
+            )
+            await __event_emitter__(
+                {
+                    "type": "message",
+                    "data": {
+                        "content": f"\n\n**🗺️ {query.title()}{location_label}** — Found {count} places:\n\n{links_md}\n"
+                    },
+                }
+            )
+
+        # Wrap Google Maps URLs through redirect for HTML
+        for p in places:
+            p["maps_url"] = redirect(p["maps_url"])
+
         # Build Rich UI HTML
         html = _build_search_results_html(
             places=places,
             query=query,
             location=location,
             api_key=self.valves.google_maps_api_key,
+            redirect_fn=redirect,
         )
 
-        # Return summary for LLM to narrate + the HTML for display
-        place_names = ", ".join(p["name"] for p in places[:3])
-        summary = f"Found {count} places for '{query}'"
-        if location:
-            summary += f" near {location}"
-        summary += f". Top results: {place_names}. The interactive map is shown above."
-
-        return html
+        return HTMLResponse(
+            content=html,
+            headers={"Content-Disposition": "inline"},
+        )
 
 
 def _build_search_results_html(
-    places: list, query: str, location: Optional[str], api_key: str
+    places: list,
+    query: str,
+    location: Optional[str],
+    api_key: str,
+    redirect_fn=None,
 ) -> str:
     """Build a rich HTML page with embedded map and place cards."""
 
@@ -164,9 +196,10 @@ def _build_search_results_html(
         f"&maptype=roadmap&{markers_param}&key={api_key}"
     )
 
-    # Interactive map link
+    # Interactive map link (routed through backend redirect to bypass COOP)
     location_str = location or f"{center_lat},{center_lng}"
-    maps_search_url = f"https://www.google.com/maps/search/{query.replace(' ', '+')}/@{center_lat},{center_lng},14z"
+    raw_maps_url = f"https://www.google.com/maps/search/{query.replace(' ', '+')}/@{center_lat},{center_lng},14z"
+    maps_search_url = redirect_fn(raw_maps_url) if redirect_fn else raw_maps_url
 
     # Place cards HTML
     place_cards_html = ""
@@ -289,6 +322,7 @@ def _build_search_results_html(
   document.querySelectorAll('img').forEach(img => {{
     img.addEventListener('load', reportHeight);
   }});
+
 </script>
 </body>
 </html>"""

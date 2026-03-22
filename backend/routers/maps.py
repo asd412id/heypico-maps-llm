@@ -1,5 +1,8 @@
+import re
+from urllib.parse import unquote
+
 from fastapi import APIRouter, Depends, Request
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, HTMLResponse
 from models.schemas import (
     PlaceSearchRequest,
     DirectionsRequest,
@@ -113,3 +116,32 @@ async def explore_area(
     result["area"] = body.area
     result["category"] = body.category
     return result
+
+
+@router.get("/open")
+async def open_maps_redirect(url: str):
+    """
+    Redirect page for Google Maps URLs.
+    Breaks the Cross-Origin-Opener-Policy chain that blocks Google Maps
+    when opened from Open WebUI (which sets COOP: same-origin).
+    No API key required — accessed from the user's browser.
+    """
+    decoded = unquote(url)
+    if not re.match(r"^https://(www\.google\.com|maps\.google\.com)/maps", decoded):
+        return JSONResponse(status_code=400, content={"error": "Invalid URL"})
+
+    safe_url = decoded.replace('"', "%22").replace("'", "%27")
+
+    return HTMLResponse(
+        content=(
+            "<!DOCTYPE html><html><head>"
+            '<meta charset="UTF-8">'
+            f'<meta http-equiv="refresh" content="0;url={safe_url}">'
+            f"<title>Opening Google Maps...</title>"
+            '</head><body style="font-family:sans-serif;display:flex;'
+            "align-items:center;justify-content:center;height:100vh;"
+            'margin:0;background:#f8f9fa">'
+            "<p>Opening Google Maps...</p>"
+            "</body></html>"
+        )
+    )

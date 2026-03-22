@@ -14,36 +14,36 @@ Ask the LLM things like:
 - *"Explore cafes in Bandung Old Town"*
 - *"Find tourist attractions near Seminyak Bali"*
 
-The LLM detects the intent, calls the appropriate Google Maps tool, and returns an **interactive map + place cards / directions** embedded right in the chat.
+The LLM detects the intent, calls the appropriate Google Maps tool via **native function calling**, and returns an **interactive map + place cards / directions** embedded right in the chat.
 
 ---
 
 ## Architecture
 
 ```
-┌─────────────────────────────────────────────────────────┐
-│                    Open WebUI (port 3000)                │
-│  Chat UI ──▶ Qwen 3.5 4B (via Ollama) ──▶ Maps Tools   │
-│                                          ↕               │
-│               Rich HTML Maps rendered in chat            │
-└─────────────────────────────────────────────────────────┘
+┌───────────────────────────────────────────────────────────┐
+│                   Open WebUI (port 3000)                  │
+│  Chat UI → HeyPico Maps model (qwen2.5:7b via Ollama)    │
+│             ↕ native function calling                     │
+│           3 Tools → HTMLResponse → embedded map iframes   │
+└───────────────────────────────────────────────────────────┘
            ↕ (internal, API-key protected)
-┌─────────────────────────────────────────────────────────┐
-│              FastAPI Backend (port 8000)                 │
-│  • Google Maps API Proxy (API key never exposed)         │
-│  • Rate Limiting (slowapi)                               │
-│  • Response Caching (Redis)                              │
-│  • Input Sanitization                                    │
-└─────────────────────────────────────────────────────────┘
+┌───────────────────────────────────────────────────────────┐
+│              FastAPI Backend (port 8000)                   │
+│  • Google Maps API Proxy (API key never exposed to LLM)   │
+│  • Rate Limiting (SlowAPI)                                │
+│  • Response Caching (Redis)                               │
+│  • Input Sanitization                                     │
+└───────────────────────────────────────────────────────────┘
            ↕
-┌─────────────────────────────────────────────────────────┐
-│                Google Maps APIs                          │
-│  • Places API (New) — search places                      │
-│  • Directions API — turn-by-turn routes                  │
-│  • Geocoding API — address → coordinates                 │
-│  • Maps Embed API — interactive iframe                   │
-│  • Static Maps API — overview images                     │
-└─────────────────────────────────────────────────────────┘
+┌───────────────────────────────────────────────────────────┐
+│                   Google Maps APIs                        │
+│  • Places API (New) — search places                       │
+│  • Directions API — turn-by-turn routes                   │
+│  • Geocoding API — address → coordinates                  │
+│  • Maps Embed API — interactive iframe                    │
+│  • Static Maps API — overview images                      │
+└───────────────────────────────────────────────────────────┘
 ```
 
 ---
@@ -54,6 +54,7 @@ The LLM detects the intent, calls the appropriate Google Maps tool, and returns 
 
 - [Docker Desktop](https://www.docker.com/products/docker-desktop/) installed and running
 - A Google Cloud account with Maps APIs enabled (see [SETUP.md](docs/SETUP.md))
+- NVIDIA GPU recommended (runs on CPU too, just slower)
 - ~8GB free disk space (for Ollama model + Docker images)
 
 ### 2. Clone & Configure
@@ -81,35 +82,41 @@ python -c "import secrets; print(secrets.token_hex(32))"
 docker compose up -d
 ```
 
-This will:
-1. Start Ollama (LLM runtime)
-2. Automatically pull **Qwen 3.5 4B** model (~3.4 GB)
-3. Start Redis (cache)
-4. Start FastAPI backend
-5. Start Open WebUI on port 3000
+This will automatically:
+1. Start Ollama and pull **Qwen 2.5 7B** model (~4.7 GB)
+2. Start Redis (cache layer)
+3. Start FastAPI backend (Google Maps proxy)
+4. Start Open WebUI on port 3000
+5. **Auto-register** all 3 Google Maps tools
+6. **Auto-configure** tool valves (API keys, backend URL)
+7. **Auto-create** `heypico-maps` model with native tool calling enabled
 
-**First run takes 5-10 minutes** while the model downloads.
+**First run takes 5-10 minutes** while the model downloads. No manual UI setup required.
 
-### 4. Install the LLM Tools
+### 4. Start Chatting
 
-Once Open WebUI is running at `http://localhost:3000`:
+Open `http://localhost:3000` and the `heypico-maps` model is pre-selected. Just type your query! 🎉
 
-1. Sign in (create admin account on first run)
-2. Go to **Workspace → Tools**
-3. Click **"+"** to add a new tool
-4. Copy and paste the content of each file from `openwebui-tools/`:
-   - `google_maps_search.py`
-   - `google_maps_directions.py`
-   - `google_maps_explore.py`
-5. Save each tool
+---
 
-### 5. Enable Tools for the Model
+## Fully Automated Setup
 
-1. Open a new chat
-2. Select **Qwen 3.5 4B** as your model
-3. Click the **"+"** or tools icon in the chat bar
-4. Enable all 3 Google Maps tools
-5. Start chatting! 🎉
+The setup is **100% automated** — no manual steps in the Open WebUI UI:
+
+| What | How |
+|------|-----|
+| Admin account | Created automatically via API (`admin@heypico.ai`) |
+| 3 Google Maps tools | Registered via `setup/setup-tools.py` on first boot |
+| Tool valves (API keys) | Configured automatically from `.env` values |
+| `heypico-maps` model | Created with `function_calling: native` + all 3 tools attached |
+| Default model | `heypico-maps` auto-selected for new chats |
+
+The automation runs inside the Open WebUI container via `setup/entrypoint.sh` → `setup/setup-tools.py`.
+
+For manual re-registration (outside Docker), use:
+```bash
+python register-tools.py
+```
 
 ---
 
@@ -130,15 +137,14 @@ Docs available at `http://localhost:8000/docs` (only when `DEBUG=true`).
 
 ---
 
-## Security Best Practices
+## Security
 
-- **API key never exposed** — The Google Maps API key lives only in the backend `.env` file. It never reaches the browser or LLM context.
+- **API key never exposed** — The Google Maps API key lives only in the backend `.env` file. It never reaches the LLM context.
 - **Internal authentication** — Tools authenticate to backend using `X-API-Key` header with a separate `BACKEND_API_KEY`.
 - **Rate limiting** — Configurable per-minute and per-day limits prevent quota abuse.
 - **Input sanitization** — All LLM-generated queries are sanitized before hitting Google APIs.
 - **CORS restriction** — Backend only accepts requests from known origins (Open WebUI).
-- **Redis caching** — Identical queries are cached (1h for places, 30m for directions) to minimize API calls.
-- **Restricted API key** — Google Cloud API key should be restricted to specific APIs and HTTP referrers (see SETUP.md).
+- **Redis caching** — Identical queries are cached (1h for places, 30m for directions, 24h for geocode) to minimize API calls.
 
 ---
 
@@ -150,6 +156,7 @@ heypico-maps-llm/
 ├── .env.example                # Environment variable template
 ├── .gitignore
 ├── README.md
+├── register-tools.py           # Standalone tool registration script
 │
 ├── backend/                    # FastAPI backend
 │   ├── Dockerfile
@@ -168,15 +175,18 @@ heypico-maps-llm/
 │   └── models/
 │       └── schemas.py          # Pydantic request/response models
 │
-├── openwebui-tools/            # Open WebUI Custom Tools (Python)
-│   ├── google_maps_search.py   # Tool: Search places
-│   ├── google_maps_directions.py # Tool: Get directions
-│   └── google_maps_explore.py  # Tool: Explore area by category
+├── openwebui-tools/            # Open WebUI Custom Tools
+│   ├── google_maps_search.py   # Tool: Search places → HTMLResponse
+│   ├── google_maps_directions.py # Tool: Directions → HTMLResponse
+│   └── google_maps_explore.py  # Tool: Explore area → HTMLResponse
+│
+├── setup/                      # Auto-setup (runs on first boot)
+│   ├── entrypoint.sh           # Entrypoint wrapper for Open WebUI
+│   └── setup-tools.py          # Tool registration + model creation
 │
 └── docs/
     ├── SETUP.md                # Google Cloud setup guide
-    ├── ASSUMPTIONS.md          # Documented assumptions
-    └── screenshots/            # Demo screenshots
+    └── ASSUMPTIONS.md          # Documented assumptions & design decisions
 ```
 
 ---
@@ -185,12 +195,14 @@ heypico-maps-llm/
 
 | Component | Technology |
 |-----------|-----------|
-| LLM | Qwen 3.5 4B (via Ollama) |
+| LLM | Qwen 2.5 7B (via Ollama) |
+| Tool Calling | Native function calling (`function_calling: native`) |
 | LLM UI | Open WebUI |
+| Tool Output | HTMLResponse → rendered as iframe in chat |
 | Backend API | Python FastAPI |
-| Cache | Redis |
+| Cache | Redis 7 |
 | Maps | Google Maps Platform (Places API New, Directions, Geocoding, Static Maps, Embed) |
-| Containerization | Docker Compose |
+| Containerization | Docker Compose (4 services) |
 | Rate Limiting | SlowAPI |
 
 ---
@@ -198,7 +210,7 @@ heypico-maps-llm/
 ## Troubleshooting
 
 **Model not responding to maps queries:**
-→ Make sure tools are enabled in the chat. Click the tools icon (⚙️ or +) in the chat input.
+→ Make sure the `heypico-maps` model is selected in the chat dropdown. It has tools pre-attached with `function_calling: native`.
 
 **"Invalid API key" errors:**
 → Check your `.env` has correct `GOOGLE_MAPS_API_KEY` and `BACKEND_API_KEY`.
@@ -208,6 +220,9 @@ heypico-maps-llm/
 
 **Docker GPU error:**
 → Remove the `deploy.resources.reservations` block from `docker-compose.yml` if you don't have an NVIDIA GPU. The model runs on CPU (slower but functional).
+
+**Tools not auto-registered:**
+→ Check logs: `docker compose logs open-webui | grep setup`. If the setup script timed out, run `python register-tools.py` manually.
 
 ---
 

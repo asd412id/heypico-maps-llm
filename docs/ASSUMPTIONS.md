@@ -4,36 +4,59 @@ This document explains the key design decisions and assumptions made during the 
 
 ---
 
-## 1. LLM Model: Qwen 3.5 4B
+## 1. LLM Model: Qwen 2.5 7B
 
-**Assumption:** Using Qwen 3.5 4B via Ollama as the local LLM.
+**Assumption:** Using Qwen 2.5 7B via Ollama as the local LLM.
 
 **Reasoning:**
-- Qwen 3.5 is the latest generation (released 2 weeks ago as of writing)
-- Has **native tool calling** support (tagged `tools` on Ollama registry)
-- 3.4GB size — runs on most laptops with 8GB+ RAM
-- 256K context window — excellent for long conversations
-- Supports vision + text (multimodal)
-- **Qwen 3.5 vs Llama 3.1 8B**: Qwen 3.5 4B has comparable or better tool-calling performance at half the size
+- Qwen 2.5 has **excellent native tool calling** support (tagged `tools` on Ollama registry)
+- 4.7GB size — fits in 6GB+ VRAM (tested on RTX 3060 Laptop 6GB)
+- Strong instruction-following and multi-language support
+- **Why not Qwen 3.5 4B?** Tested during development; Qwen 2.5 7B showed more reliable tool calling behavior with `function_calling: native` in Open WebUI
 
-**Alternative:** If your machine has 8GB+ VRAM, use `qwen3.5:9b` (6.6GB) for better accuracy.
+**Alternative:** If your machine has 8GB+ VRAM, use `qwen2.5:14b` for better accuracy.
 
 ---
 
 ## 2. Open WebUI Custom Tools (Not MCP)
 
-**Assumption:** Using Open WebUI's built-in "Tools" feature (Python plugins) instead of MCP servers or external tool APIs.
+**Assumption:** Using Open WebUI's built-in "Tools" feature (Python plugins) instead of MCP servers.
 
 **Reasoning:**
 - Open WebUI Tools run as Python on the Open WebUI server — no extra infrastructure
-- Tools can return `HTMLResponse` that Open WebUI renders as interactive iframes in chat
+- Tools return `HTMLResponse` that Open WebUI renders as interactive iframes in chat
 - This enables **embedded Google Maps directly in chat** — the core UX requirement
 - MCP would require an additional server and more complex setup
-- Tools integrate natively with Qwen 3.5's tool-calling capability
+- Tools integrate natively with Qwen's tool-calling capability via `function_calling: native`
 
 ---
 
-## 3. Backend Proxy Pattern (Security-First)
+## 3. HTMLResponse for Rich Map Rendering
+
+**Assumption:** Tools return `HTMLResponse` (from `fastapi.responses`) instead of plain HTML strings.
+
+**Reasoning:**
+- Open WebUI's middleware detects `HTMLResponse` return type and auto-renders it as an iframe embed
+- Plain string HTML is shown as raw text; `HTMLResponse` triggers the iframe rendering pipeline
+- The `Content-Disposition: inline` header ensures proper display
+- When a tool returns `HTMLResponse`, Open WebUI replaces the tool result sent to the LLM with a brief "UI active" message, preventing the LLM from seeing raw HTML
+
+---
+
+## 4. Fully Automated Setup (No Manual UI Steps)
+
+**Assumption:** The entire setup — admin account, tool registration, valve configuration, model creation — is automated via API.
+
+**Reasoning:**
+- Reviewers should be able to run `docker compose up -d` and have everything working
+- `setup/entrypoint.sh` wraps the Open WebUI startup and runs `setup-tools.py` in the background
+- `setup-tools.py` handles: admin signup, tool create (delete+recreate pattern), valve configuration, and model creation
+- The `heypico-maps` model is created with `function_calling: native` and all 3 tools pre-attached
+- `DEFAULT_MODELS=heypico-maps` ensures the model is auto-selected for new chats
+
+---
+
+## 5. Backend Proxy Pattern (Security-First)
 
 **Assumption:** The Google Maps API key is NEVER passed to the LLM or browser. All Maps API calls go through the FastAPI backend proxy.
 
@@ -43,9 +66,11 @@ This document explains the key design decisions and assumptions made during the 
 - The backend uses a separate `BACKEND_API_KEY` to authenticate requests from the tools
 - This follows the principle of least privilege
 
+**Note:** The Google Maps API key is still used in `photo_url` and `embed_url` responses (for Static Maps/Embed API), as these URLs are rendered client-side. In production, use a domain-restricted API key for these.
+
 ---
 
-## 4. Google Maps APIs Used
+## 6. Google Maps APIs Used
 
 **Assumption:** The following APIs are enabled on the Google Cloud project:
 
@@ -61,7 +86,7 @@ This document explains the key design decisions and assumptions made during the 
 
 ---
 
-## 5. Redis Caching
+## 7. Redis Caching
 
 **Assumption:** Redis is used for caching API responses with these TTLs:
 
@@ -75,7 +100,7 @@ This document explains the key design decisions and assumptions made during the 
 
 ---
 
-## 6. Rate Limiting
+## 8. Rate Limiting
 
 **Assumption:** Rate limits are set at 60 requests/minute and 1000 requests/day.
 
@@ -87,47 +112,49 @@ This document explains the key design decisions and assumptions made during the 
 
 ---
 
-## 7. Docker Compose for Local Deployment
+## 9. Docker Compose for Local Deployment
 
-**Assumption:** The project uses Docker Compose to run all services locally.
+**Assumption:** The project uses Docker Compose with 4 services to run everything locally.
+
+**Services:** Ollama (LLM), Redis (cache), Backend (FastAPI), Open WebUI (chat UI + tool orchestrator)
 
 **Reasoning:**
 - One-command setup: `docker compose up -d`
 - Reproducible environment for reviewers
 - Services communicate over Docker network (no port conflicts)
-- Easy to add/remove GPU support
+- GPU support enabled by default (can be removed for CPU-only)
 
 ---
 
-## 8. No GPU Required
+## 10. Native Tool Calling
 
-**Assumption:** The project works on CPU-only machines (slower but functional).
+**Assumption:** The `heypico-maps` model uses `function_calling: native` (not prompt-based).
 
 **Reasoning:**
-- Qwen 3.5 4B can run on 8GB RAM with CPU inference
-- GPU support is enabled by default in `docker-compose.yml` but the deploy block can be removed
+- Qwen 2.5 7B supports native tool calling natively
+- `native` mode passes tool schemas directly in the model's tool-calling format
+- More reliable than prompt-based function calling (which embeds tool schemas in the system prompt)
+- Open WebUI's model API supports `params.function_calling: "native"` to enable this
+
+---
+
+## 11. Delete + Recreate Pattern for Tool Updates
+
+**Assumption:** When updating tools, we delete the existing tool and recreate it instead of using PUT/POST update.
+
+**Reasoning:**
+- Open WebUI v0.8.10's POST update endpoint for tools returns HTTP 405
+- Delete (`DELETE /api/v1/tools/id/{id}/delete`) + Create (`POST /api/v1/tools/create`) works reliably
+- This pattern is used in both `setup-tools.py` (container) and `register-tools.py` (standalone)
+
+---
+
+## 12. No GPU Required (But Recommended)
+
+**Assumption:** The project works on CPU-only machines.
+
+**Reasoning:**
+- Qwen 2.5 7B can run on CPU with 16GB+ RAM
+- GPU support is enabled by default in `docker-compose.yml` (NVIDIA)
+- Remove the `deploy.resources.reservations` block for CPU-only machines
 - Response time: ~2-5s per token on CPU vs ~0.1s on GPU
-
----
-
-## 9. Tool Output as Rich HTML
-
-**Assumption:** Tools return full HTML pages that Open WebUI renders as iframes in the chat.
-
-**Reasoning:**
-- Open WebUI supports `HTMLResponse` return type from tools
-- The HTML includes a `postMessage` script to auto-resize the iframe
-- This provides a native embedded map experience without any additional plugins
-- Maps show: numbered markers, place photos, ratings, open/closed status, price level, Google Maps links
-
----
-
-## 10. English-First, Multi-Language Input
-
-**Assumption:** The maps tools use English for API responses but accept queries in any language.
-
-**Reasoning:**
-- Google Maps APIs return English results by default
-- Qwen 3.5 supports 201 languages for input
-- User can ask in Bahasa Indonesia or any language; Qwen translates intent and passes it to the tool
-- Map results/labels remain in English (standard for travel apps)

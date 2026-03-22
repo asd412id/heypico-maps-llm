@@ -9,8 +9,16 @@ requirements: httpx
 
 import httpx
 import os
+import urllib.parse
 from pydantic import BaseModel, Field
 from typing import Optional, Literal
+from fastapi.responses import HTMLResponse
+
+
+def _redirect_url(backend_url: str, target_url: str) -> str:
+    """Route Google Maps URL through backend redirect to bypass COOP."""
+    pub = backend_url.replace("://backend:", "://localhost:")
+    return f"{pub}/maps/open?url={urllib.parse.quote(target_url, safe='')}"
 
 
 class Tools:
@@ -101,10 +109,35 @@ class Tools:
                 }
             )
 
+        # Build redirect helper for Google Maps links
+        redirect = lambda url: _redirect_url(self.valves.backend_url, url)
+
+        # Emit clickable Google Maps link as markdown in chat (outside iframe)
+        if __event_emitter__:
+            maps_url = redirect(data.get("maps_url", ""))
+            await __event_emitter__(
+                {
+                    "type": "message",
+                    "data": {
+                        "content": (
+                            f"\n\n**🗺️ Directions: {data.get('origin_address', origin)} → {data.get('destination_address', destination)}**\n"
+                            f"📏 {data['total_distance']} · ⏱️ {data['total_duration']}\n\n"
+                            f"[🔗 Open Full Route in Google Maps]({maps_url})\n"
+                        )
+                    },
+                }
+            )
+
+        # Wrap Google Maps URL through redirect
+        data["maps_url"] = redirect(data.get("maps_url", ""))
+
         html = _build_directions_html(
             data, travel_mode, self.valves.google_maps_api_key
         )
-        return html
+        return HTMLResponse(
+            content=html,
+            headers={"Content-Disposition": "inline"},
+        )
 
 
 def _build_directions_html(data: dict, travel_mode: str, api_key: str) -> str:
@@ -231,6 +264,7 @@ def _build_directions_html(data: dict, travel_mode: str, api_key: str) -> str:
   window.addEventListener('resize', reportHeight);
   setTimeout(reportHeight, 300);
   setTimeout(reportHeight, 1000);
+
 </script>
 </body>
 </html>"""

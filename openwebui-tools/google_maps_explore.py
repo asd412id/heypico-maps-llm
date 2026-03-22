@@ -9,8 +9,16 @@ requirements: httpx
 
 import httpx
 import os
+import urllib.parse
 from pydantic import BaseModel, Field
 from typing import Literal
+from fastapi.responses import HTMLResponse
+
+
+def _redirect_url(backend_url: str, target_url: str) -> str:
+    """Route Google Maps URL through backend redirect to bypass COOP."""
+    pub = backend_url.replace("://backend:", "://localhost:")
+    return f"{pub}/maps/open?url={urllib.parse.quote(target_url, safe='')}"
 
 
 class Tools:
@@ -120,14 +128,49 @@ class Tools:
                 }
             )
 
+        # Build redirect helper for Google Maps links
+        redirect = lambda url: _redirect_url(self.valves.backend_url, url)
+
+        # Emit clickable Google Maps links as markdown in chat (outside iframe)
+        if __event_emitter__:
+            links_md = "\n".join(
+                f"{i + 1}. [{p['name']}]({redirect(p['maps_url'])})"
+                for i, p in enumerate(places)
+            )
+            await __event_emitter__(
+                {
+                    "type": "message",
+                    "data": {
+                        "content": f"\n\n**{label} in {area}** — Found {len(places)} places:\n\n{links_md}\n"
+                    },
+                }
+            )
+
+        # Wrap Google Maps URLs through redirect for HTML
+        for p in places:
+            p["maps_url"] = redirect(p["maps_url"])
+
         html = _build_explore_html(
-            places, area, category, label, self.valves.google_maps_api_key
+            places,
+            area,
+            category,
+            label,
+            self.valves.google_maps_api_key,
+            redirect_fn=redirect,
         )
-        return html
+        return HTMLResponse(
+            content=html,
+            headers={"Content-Disposition": "inline"},
+        )
 
 
 def _build_explore_html(
-    places: list, area: str, category: str, label: str, api_key: str
+    places: list,
+    area: str,
+    category: str,
+    label: str,
+    api_key: str,
+    redirect_fn=None,
 ) -> str:
     """Build a rich HTML page with embedded area overview map and place grid."""
 
@@ -145,8 +188,9 @@ def _build_explore_html(
         f"&maptype=roadmap&{markers_param}&key={api_key}"
     )
 
-    # Interactive Google Maps link for the area
-    maps_area_url = f"https://www.google.com/maps/search/{label.replace('✨', '').strip().replace(' ', '+')}/@{center_lat},{center_lng},14z"
+    # Interactive Google Maps link (routed through backend redirect to bypass COOP)
+    raw_area_url = f"https://www.google.com/maps/search/{label.replace('✨', '').strip().replace(' ', '+')}/@{center_lat},{center_lng},14z"
+    maps_area_url = redirect_fn(raw_area_url) if redirect_fn else raw_area_url
 
     # Category color themes
     category_colors = {
@@ -272,6 +316,7 @@ def _build_explore_html(
   setTimeout(reportHeight, 300);
   setTimeout(reportHeight, 1000);
   document.querySelectorAll('img').forEach(img => img.addEventListener('load', reportHeight));
+
 </script>
 </body>
 </html>"""
