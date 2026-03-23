@@ -506,8 +506,8 @@ async def get_geo_result(request_id: str, request: Request):
 async def geolocation_card(user_id: str, request: Request):
     """
     Render a geolocation card inside the embed iframe.
-    Opens a popup window to /api/maps/user-location/gps/{user_id} where
-    GPS works at top level (no sandbox restrictions), then polls for the result.
+    First tries silent GPS detection (works if permission was previously granted).
+    If silent detection fails, shows a button that opens a popup window for GPS.
     No API key required — accessed from user's browser.
     """
     _validate_id(user_id, "user_id")
@@ -533,18 +533,39 @@ html,body{{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-s
 <div class="c" id="content">
     <div class="ic">\U0001f4cd</div>
     <div class="tt">Detect Your Location</div>
-    <div class="st">Tap the button to allow GPS access</div>
-    <div id="action"><button class="bt" onclick="openGPS()">📍 Allow Location Access</button></div>
-    <div class="ld" id="status"></div>
+    <div class="st" id="subtitle">Detecting GPS...</div>
+    <div id="action"></div>
+    <div class="ld" id="status"><span class="sp"></span>Auto-detecting location...</div>
 </div>
 <script>
 const uid="{safe_uid}";
 const rid=new URLSearchParams(window.location.search).get('rid')||'';
 const el=document.getElementById('status');
 const act=document.getElementById('action');
+const sub=document.getElementById('subtitle');
 let pollTimer=null;
 
 function postHeight(){{window.parent.postMessage({{type:'iframe:height',height:document.body.scrollHeight}},'*');}}
+
+function sendResult(data){{
+  return fetch('/api/maps/geo-result',{{
+    method:'POST',
+    headers:{{'Content-Type':'application/json'}},
+    body:JSON.stringify(Object.assign({{request_id:rid,user_id:uid}},data))
+  }});
+}}
+
+function showSuccess(acc){{
+  el.innerHTML='<span class="ok">\\u2705 Location detected (\\u00b1'+acc+'m)</span>';
+  postHeight();
+}}
+
+function showButton(){{
+  sub.textContent='Tap the button to allow GPS access';
+  act.innerHTML='<button class="bt" onclick="openGPS()">\\U0001f4cd Allow Location Access</button>';
+  el.innerHTML='';
+  postHeight();
+}}
 
 function openGPS(){{
   const url='/api/maps/user-location/gps/'+uid+'?rid='+rid;
@@ -579,6 +600,25 @@ function startPoll(){{
       }}
     }}).catch(function(){{}});
   }},1000);
+}}
+
+// Try silent GPS first (works if permission was previously granted)
+if(navigator.geolocation){{
+  navigator.geolocation.getCurrentPosition(
+    function(pos){{
+      const lat=pos.coords.latitude,lng=pos.coords.longitude,acc=Math.round(pos.coords.accuracy);
+      sendResult({{status:'ok',latitude:lat,longitude:lng,accuracy:acc}}).then(function(){{
+        showSuccess(acc);
+      }}).catch(function(){{showSuccess(acc);}});
+    }},
+    function(err){{
+      // Silent detection failed — show button for user interaction
+      showButton();
+    }},
+    {{enableHighAccuracy:true,timeout:5000,maximumAge:300000}}
+  );
+}}else{{
+  showButton();
 }}
 
 window.addEventListener('load',postHeight);
