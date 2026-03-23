@@ -1,6 +1,7 @@
 import httpx
 import hashlib
 import json
+import urllib.parse
 from typing import Optional
 from config import get_settings
 from services.cache import CacheService
@@ -24,7 +25,7 @@ class GoogleMapsService:
 
     def _cache_key(self, prefix: str, **kwargs) -> str:
         payload = json.dumps(kwargs, sort_keys=True)
-        h = hashlib.md5(payload.encode()).hexdigest()
+        h = hashlib.sha256(payload.encode()).hexdigest()[:16]
         return f"{prefix}:{h}"
 
     async def search_places(
@@ -104,11 +105,15 @@ class GoogleMapsService:
 
             # Build photo URL if available
             photo_url = None
+            photo_resource = None
             if place.get("photos"):
-                photo_name = place["photos"][0]["name"]
-                photo_url = (
-                    f"{GOOGLE_PLACES_NEW_BASE_URL}/{photo_name}/media"
-                    f"?maxHeightPx=400&maxWidthPx=400&key={self.api_key}"
+                photo_resource = place["photos"][0]["name"]
+                photo_url = f"/api/maps/photo/{place.get('id', '')}/0"
+                # Cache photo resource name for the proxy endpoint
+                await self.cache.set(
+                    f"photo_resource:{place.get('id', '')}:0",
+                    photo_resource,
+                    ttl=settings.cache_ttl_places_seconds,
                 )
 
             # Convert priceLevel enum to integer
@@ -131,6 +136,7 @@ class GoogleMapsService:
                     "place_id": place.get("id", ""),
                     "types": place.get("types", []),
                     "photo_url": photo_url,
+                    "photo_resource": photo_resource,
                     "price_level": price_level,
                     "open_now": place.get("currentOpeningHours", {}).get("openNow"),
                     "lat": lat,
@@ -178,7 +184,12 @@ class GoogleMapsService:
                 f"Directions API error: {data.get('status')} — {data.get('error_message', '')}"
             )
 
+        if not data.get("routes"):
+            raise ValueError("No routes found for the given origin and destination")
+
         route = data["routes"][0]
+        if not route.get("legs"):
+            raise ValueError("No route legs found")
         leg = route["legs"][0]
 
         steps = []
@@ -195,13 +206,13 @@ class GoogleMapsService:
         # Build Google Maps URL for the route
         maps_url = (
             f"https://www.google.com/maps/dir/?api=1"
-            f"&origin={origin}&destination={destination}&travelmode={travel_mode}"
+            f"&origin={urllib.parse.quote(origin)}&destination={urllib.parse.quote(destination)}&travelmode={travel_mode}"
         )
 
-        # Build embed URL for iframe
+        # Build embed URL via server proxy (keeps API key server-side)
         embed_url = (
-            f"https://www.google.com/maps/embed/v1/directions"
-            f"?key={self.api_key}&origin={origin}&destination={destination}&mode={travel_mode}"
+            f"/api/maps/embed-map?type=directions"
+            f"&origin={urllib.parse.quote(origin)}&destination={urllib.parse.quote(destination)}&mode={travel_mode}"
         )
 
         result = {

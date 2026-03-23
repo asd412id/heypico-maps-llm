@@ -6,8 +6,6 @@ Renders beautiful informational cards and static map images.
 import urllib.parse
 from html import escape
 
-from config import get_settings
-
 
 def render_places_card(data: dict) -> str:
     """Render a rich card for places (search/explore results)."""
@@ -141,7 +139,7 @@ def render_directions_card(data: dict) -> str:
 
     step_rows = ""
     for i, s in enumerate(steps):
-        instruction = s.get("instruction", "")
+        instruction = escape(s.get("instruction", ""))
         dist = escape(s.get("distance", ""))
         dur = escape(s.get("duration", ""))
         step_rows += f"""
@@ -210,22 +208,9 @@ window.addEventListener('load',()=>window.parent.postMessage({{type:'iframe:heig
 def render_places_map(data: dict) -> str:
     """Render a Google Maps Static API image with numbered markers for places."""
     places = data.get("places", [])
-    api_key = get_settings().google_maps_api_key
+    card_id = data.get("_card_id", "")
 
-    marker_parts = []
-    for i, p in enumerate(places):
-        lat = p.get("lat")
-        lng = p.get("lng")
-        if lat is not None and lng is not None:
-            label = str(i + 1) if i < 9 else chr(65 + i - 9)
-            marker_parts.append(f"markers=color:red%7Clabel:{label}%7C{lat},{lng}")
-
-    markers_str = "&".join(marker_parts)
-    map_url = (
-        f"https://maps.googleapis.com/maps/api/staticmap"
-        f"?size=640x400&scale=2&maptype=roadmap&{markers_str}"
-        f"&key={api_key}"
-    )
+    map_url = f"/api/maps/static-map/{card_id}" if card_id else ""
 
     gmaps_url = data.get("maps_url", "")
     if gmaps_url:
@@ -258,29 +243,9 @@ window.parent.postMessage({{type:'iframe:height',height:h}},'*');
 
 def render_directions_map(data: dict) -> str:
     """Render a Google Maps Static API image with route polyline."""
-    api_key = get_settings().google_maps_api_key
-    polyline = data.get("overview_polyline", "")
-    origin_lat = data.get("origin_lat")
-    origin_lng = data.get("origin_lng")
-    dest_lat = data.get("dest_lat")
-    dest_lng = data.get("dest_lng")
+    card_id = data.get("_card_id", "")
 
-    parts = ["size=640x400", "scale=2", "maptype=roadmap"]
-
-    if polyline:
-        encoded_poly = urllib.parse.quote(polyline, safe="")
-        parts.append(f"path=weight:4%7Ccolor:0x4285F4FF%7Cenc:{encoded_poly}")
-
-    if origin_lat is not None and origin_lng is not None:
-        parts.append(f"markers=color:green%7Clabel:A%7C{origin_lat},{origin_lng}")
-
-    if dest_lat is not None and dest_lng is not None:
-        parts.append(f"markers=color:red%7Clabel:B%7C{dest_lat},{dest_lng}")
-
-    map_url = (
-        f"https://maps.googleapis.com/maps/api/staticmap"
-        f"?{'&'.join(parts)}&key={api_key}"
-    )
+    map_url = f"/api/maps/static-map/{card_id}" if card_id else ""
 
     gmaps_url = data.get("maps_url", "")
     if gmaps_url:

@@ -7,7 +7,7 @@ services:
     container_name: heypico-ollama
     restart: unless-stopped
     ports:
-      - "11434:11434"
+      - "127.0.0.1:11434:11434"
     volumes:
       - ollama_data:/root/.ollama
     environment:
@@ -21,9 +21,9 @@ services:
             - driver: nvidia
               count: all
               capabilities: [gpu]
-    entrypoint: ["/bin/sh", "-c", "/bin/ollama serve & sleep 5 && ollama pull qwen2.5:7b; wait"]
+    entrypoint: ["/bin/sh", "-c", "/bin/ollama serve & sleep 5 && ollama pull ${DEFAULT_MODEL:-qwen2.5:7b}; wait"]
     healthcheck:
-      test: ["CMD-SHELL", "ollama list | grep -q 'qwen2.5:7b'"]
+      test: ["CMD-SHELL", "ollama list | grep -q '${DEFAULT_MODEL:-qwen2.5:7b}'"]
       interval: 15s
       timeout: 10s
       retries: 40
@@ -37,7 +37,7 @@ services:
     container_name: heypico-redis
     restart: unless-stopped
     ports:
-      - "6379:6379"
+      - "127.0.0.1:6379:6379"
     volumes:
       - redis_data:/data
     command: redis-server --appendonly yes --maxmemory 256mb --maxmemory-policy allkeys-lru
@@ -114,7 +114,7 @@ services:
       - GOOGLE_MAPS_API_KEY=${GOOGLE_MAPS_API_KEY}
       - FRONTEND_URL=${FRONTEND_URL:-http://localhost:3000}
       - ADMIN_EMAIL=${ADMIN_EMAIL:-admin@heypico.ai}
-      - ADMIN_PASSWORD=${ADMIN_PASSWORD:-heypico2026}
+      - ADMIN_PASSWORD=${ADMIN_PASSWORD:?ADMIN_PASSWORD must be set in .env}
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8080"]
       interval: 15s

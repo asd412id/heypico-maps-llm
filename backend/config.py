@@ -1,8 +1,10 @@
-from pydantic_settings import BaseSettings
+from pydantic_settings import BaseSettings, SettingsConfigDict
 from functools import lru_cache
 
 
 class Settings(BaseSettings):
+    model_config = SettingsConfigDict(env_file=".env", case_sensitive=False)
+
     # Google Maps
     google_maps_api_key: str
 
@@ -27,10 +29,6 @@ class Settings(BaseSettings):
     cors_origins: str = (
         "http://localhost:3000,http://127.0.0.1:3000,http://open-webui:8080"
     )
-
-    class Config:
-        env_file = ".env"
-        case_sensitive = False
 
 
 @lru_cache()

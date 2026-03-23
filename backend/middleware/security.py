@@ -1,11 +1,10 @@
-from fastapi import Request, HTTPException, status
-from fastapi.security import APIKeyHeader
-from config import get_settings
 import re
+import secrets
+
+from fastapi import Request, HTTPException, status
+from config import get_settings
 
 settings = get_settings()
-
-api_key_header = APIKeyHeader(name="X-API-Key", auto_error=False)
 
 
 async def verify_api_key(request: Request) -> str:
@@ -14,7 +13,7 @@ async def verify_api_key(request: Request) -> str:
     This prevents unauthorized access to the backend proxy.
     """
     api_key = request.headers.get("X-API-Key")
-    if not api_key or api_key != settings.backend_api_key:
+    if not api_key or not secrets.compare_digest(api_key, settings.backend_api_key):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid or missing API key",

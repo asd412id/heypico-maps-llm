@@ -1,9 +1,10 @@
 import re
 import uuid
-from urllib.parse import unquote
+from urllib.parse import unquote, urlparse
 
+import httpx
 from fastapi import APIRouter, Depends, Request
-from fastapi.responses import JSONResponse, HTMLResponse
+from fastapi.responses import JSONResponse, HTMLResponse, Response
 from models.schemas import (
     PlaceSearchRequest,
     DirectionsRequest,
@@ -27,6 +28,13 @@ from config import get_settings
 
 settings = get_settings()
 router = APIRouter(prefix="/maps", tags=["Google Maps"])
+
+_SAFE_ID_RE = re.compile(r"^[\w\-]{1,128}$")
+
+
+def _validate_id(value: str, name: str = "ID"):
+    if not _SAFE_ID_RE.match(value):
+        raise ValueError(f"Invalid {name}")
 
 
 def get_maps_service(request: Request) -> GoogleMapsService:
@@ -101,8 +109,8 @@ async def geocode_address(
 @limiter.limit(f"{settings.rate_limit_per_minute}/minute")
 async def reverse_geocode(
     request: Request,
-    lat: float = 0,
-    lng: float = 0,
+    lat: float,
+    lng: float,
     maps: GoogleMapsService = Depends(get_maps_service),
 ):
     """Convert latitude/longitude to a human-readable address."""
@@ -156,9 +164,22 @@ async def embed_map(url: str, height: int = 450):
     No API key required — accessed from the user's browser.
     """
     decoded = unquote(url)
-    if not re.match(
-        r"^https://(www\.|maps\.)?(google\.(com|co\.[a-z]+)|googleapis\.com)/",
-        decoded,
+    parsed = urlparse(decoded)
+    hostname = parsed.hostname or ""
+    valid_domains = (
+        "google.com",
+        "google.co.id",
+        "google.co.uk",
+        "google.co.jp",
+        "google.co.in",
+        "google.co.kr",
+        "google.co.th",
+        "googleapis.com",
+        "maps.google.com",
+    )
+    if not (
+        parsed.scheme == "https"
+        and any(hostname == d or hostname.endswith(f".{d}") for d in valid_domains)
     ):
         return JSONResponse(status_code=400, content={"error": "Invalid URL"})
 
@@ -215,6 +236,8 @@ async def render_card(card_id: str, request: Request):
         )
 
     card_type = data.get("card_type", "places")
+    if card_type in ("places_map", "directions_map"):
+        data["_card_id"] = card_id
     if card_type == "directions":
         html = render_directions_card(data)
     elif card_type == "places_map":
@@ -223,6 +246,175 @@ async def render_card(card_id: str, request: Request):
         html = render_directions_map(data)
     else:
         html = render_places_card(data)
+
+    return HTMLResponse(content=html)
+
+
+@router.get("/static-map/{card_id}")
+async def proxy_static_map(card_id: str, request: Request):
+    """
+    Proxy Google Maps Static API images so the API key never reaches the browser.
+    Builds the static map URL server-side from stored card data, fetches the image,
+    and streams it to the client.
+    """
+    if not re.match(r"^[0-9a-f\-]{36}$", card_id):
+        return JSONResponse(status_code=400, content={"error": "Invalid card ID"})
+
+    cache: CacheService = request.app.state.cache
+    data = await cache.get(f"card:{card_id}")
+    if not data:
+        return JSONResponse(status_code=404, content={"error": "Card not found"})
+
+    api_key = settings.google_maps_api_key
+    card_type = data.get("card_type", "")
+
+    if card_type == "places_map":
+        places = data.get("places", [])
+        marker_parts = []
+        for i, p in enumerate(places):
+            lat, lng = p.get("lat"), p.get("lng")
+            if lat is not None and lng is not None:
+                label = str(i + 1) if i < 9 else chr(65 + i - 9)
+                marker_parts.append(f"markers=color:red%7Clabel:{label}%7C{lat},{lng}")
+        markers_str = "&".join(marker_parts)
+        url = (
+            f"https://maps.googleapis.com/maps/api/staticmap"
+            f"?size=640x400&scale=2&maptype=roadmap&{markers_str}&key={api_key}"
+        )
+    elif card_type == "directions_map":
+        import urllib.parse as _up
+
+        polyline = data.get("overview_polyline", "")
+        parts = ["size=640x400", "scale=2", "maptype=roadmap"]
+        if polyline:
+            parts.append(
+                f"path=weight:4%7Ccolor:0x4285F4FF%7Cenc:{_up.quote(polyline, safe='')}"
+            )
+        olat, olng = data.get("origin_lat"), data.get("origin_lng")
+        dlat, dlng = data.get("dest_lat"), data.get("dest_lng")
+        if olat is not None and olng is not None:
+            parts.append(f"markers=color:green%7Clabel:A%7C{olat},{olng}")
+        if dlat is not None and dlng is not None:
+            parts.append(f"markers=color:red%7Clabel:B%7C{dlat},{dlng}")
+        url = f"https://maps.googleapis.com/maps/api/staticmap?{'&'.join(parts)}&key={api_key}"
+    else:
+        return JSONResponse(status_code=400, content={"error": "Not a map card"})
+
+    async with httpx.AsyncClient(timeout=15.0) as client:
+        resp = await client.get(url)
+        resp.raise_for_status()
+        return Response(
+            content=resp.content,
+            media_type=resp.headers.get("content-type", "image/png"),
+            headers={"Cache-Control": "public, max-age=86400"},
+        )
+
+
+@router.get("/photo/{place_id}/{index}")
+async def proxy_photo(place_id: str, index: int, request: Request):
+    """
+    Proxy Google Places photo so the API key stays server-side.
+    Looks up the photo resource name from cached place data and fetches
+    the image through the Places API (New).
+    """
+    if not re.match(r"^[\w\-]{1,128}$", place_id):
+        return JSONResponse(status_code=400, content={"error": "Invalid place ID"})
+    if index < 0 or index > 9:
+        return JSONResponse(status_code=400, content={"error": "Invalid photo index"})
+
+    cache: CacheService = request.app.state.cache
+
+    # Try to find the photo resource name from cached search results
+    photo_resource = None
+
+    # Check photo cache first (set by previous proxy calls or search)
+    cached_photo = await cache.get(f"photo:{place_id}:{index}")
+    if cached_photo and isinstance(cached_photo, dict) and cached_photo.get("resource"):
+        photo_resource = cached_photo["resource"]
+    else:
+        # Scan recent place search results for this place_id
+        # The GoogleMapsService stores results with photo_resource in each place dict
+        # We look through the cache to find it
+        google_svc: GoogleMapsService = request.app.state.google_maps
+        photo_resource = await _find_photo_resource(cache, place_id, index)
+
+    if not photo_resource:
+        return JSONResponse(status_code=404, content={"error": "Photo not found"})
+
+    # Fetch from Google Places API (New) media endpoint
+    api_key = settings.google_maps_api_key
+    media_url = (
+        f"https://places.googleapis.com/v1/{photo_resource}/media"
+        f"?maxWidthPx=400&skipHttpRedirect=true&key={api_key}"
+    )
+
+    async with httpx.AsyncClient(timeout=15.0) as client:
+        resp = await client.get(media_url)
+        if resp.status_code != 200:
+            return JSONResponse(
+                status_code=502, content={"error": "Failed to fetch photo"}
+            )
+        data = resp.json()
+        photo_uri = data.get("photoUri")
+        if not photo_uri:
+            return JSONResponse(
+                status_code=502, content={"error": "No photo URI returned"}
+            )
+
+        # Fetch the actual image
+        img_resp = await client.get(photo_uri)
+        img_resp.raise_for_status()
+        return Response(
+            content=img_resp.content,
+            media_type=img_resp.headers.get("content-type", "image/jpeg"),
+            headers={"Cache-Control": "public, max-age=86400"},
+        )
+
+
+async def _find_photo_resource(
+    cache: CacheService, place_id: str, index: int
+) -> str | None:
+    """
+    Search cached place results for a photo_resource matching place_id.
+    Returns the photo resource name string or None.
+    """
+    # Direct photo resource cache (set during place search)
+    cached = await cache.get(f"photo_resource:{place_id}:{index}")
+    if cached:
+        return cached
+    return None
+
+
+@router.get("/embed-map")
+async def proxy_embed(request: Request, type: str = "directions"):
+    """
+    Proxy Google Maps Embed API: injects the API key server-side
+    and returns an HTML page with the embedded map.
+    Only supports trusted embed types (directions, place, search).
+    """
+    allowed_types = {"directions", "place", "search"}
+    if type not in allowed_types:
+        return JSONResponse(status_code=400, content={"error": "Invalid embed type"})
+
+    # Rebuild query params, excluding 'type' and any 'key' param
+    params = []
+    for k, v in request.query_params.items():
+        if k in ("type", "key"):
+            continue
+        params.append(f"{k}={v}")
+
+    api_key = settings.google_maps_api_key
+    params.append(f"key={api_key}")
+
+    embed_src = f"https://www.google.com/maps/embed/v1/{type}?{'&'.join(params)}"
+
+    html = f"""<!DOCTYPE html><html><head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<style>*{{margin:0;padding:0}}html,body,iframe{{width:100%;height:100%;border:0}}</style>
+</head><body>
+<iframe src="{embed_src}" allowfullscreen loading="lazy" referrerpolicy="no-referrer-when-downgrade"></iframe>
+</body></html>"""
 
     return HTMLResponse(content=html)
 
@@ -298,6 +490,7 @@ async def get_geo_result(request_id: str, request: Request):
     Poll for browser geolocation result by request_id.
     Returns {found: false} if no result yet.
     """
+    _validate_id(request_id, "request_id")
     cache: CacheService = request.app.state.cache
     data = await cache.get(f"geo_result:{request_id}")
     if not data:
@@ -309,11 +502,12 @@ async def get_geo_result(request_id: str, request: Request):
 async def geolocation_card(user_id: str, request: Request):
     """
     Render a geolocation card inside the embed iframe.
-    Since embed iframes lack allow="geolocation", this card opens a popup
-    window to /api/maps/user-location/gps/{user_id} where GPS works at top level.
-    Then polls for the result to update the UI.
+    Opens a popup window to /api/maps/user-location/gps/{user_id} where
+    GPS works at top level (no sandbox restrictions), then polls for the result.
     No API key required — accessed from user's browser.
     """
+    _validate_id(user_id, "user_id")
+    safe_uid = user_id.replace('"', "").replace("'", "").replace("\\", "")
     html = f"""<!DOCTYPE html><html><head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
@@ -340,7 +534,7 @@ html,body{{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-s
     <div class="ld" id="status"></div>
 </div>
 <script>
-const uid="{user_id}";
+const uid="{safe_uid}";
 const rid=new URLSearchParams(window.location.search).get('rid')||'';
 const el=document.getElementById('status');
 const act=document.getElementById('action');
@@ -398,6 +592,8 @@ async def geolocation_popup(user_id: str, request: Request):
     Detects GPS, posts result to /maps/geo-result, then auto-closes.
     No API key required — accessed from user's browser.
     """
+    _validate_id(user_id, "user_id")
+    safe_uid = user_id.replace('"', "").replace("'", "").replace("\\", "")
     html = f"""<!DOCTYPE html><html><head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
@@ -424,7 +620,7 @@ html,body{{min-height:100vh;font-family:-apple-system,BlinkMacSystemFont,'Segoe 
     <div class="cls" id="close-msg">This window will close automatically...</div>
 </div>
 <script>
-const uid="{user_id}";
+const uid="{safe_uid}";
 const rid=new URLSearchParams(window.location.search).get('rid')||'';
 const el=document.getElementById('status');
 const cm=document.getElementById('close-msg');
@@ -478,10 +674,25 @@ async def open_maps_redirect(url: str):
     No API key required — accessed from the user's browser.
     """
     decoded = unquote(url)
-    # Accept any google.com / google.co.* / googleapis.com maps URL
-    if not re.match(
-        r"^https://(www\.|maps\.)?(google\.(com|co\.[a-z]+)|googleapis\.com)/",
-        decoded,
+    parsed_url = urlparse(decoded)
+    hostname_open = parsed_url.hostname or ""
+    valid_open_domains = (
+        "google.com",
+        "google.co.id",
+        "google.co.uk",
+        "google.co.jp",
+        "google.co.in",
+        "google.co.kr",
+        "google.co.th",
+        "googleapis.com",
+        "maps.google.com",
+    )
+    if not (
+        parsed_url.scheme == "https"
+        and any(
+            hostname_open == d or hostname_open.endswith(f".{d}")
+            for d in valid_open_domains
+        )
     ):
         return JSONResponse(status_code=400, content={"error": "Invalid URL"})
 

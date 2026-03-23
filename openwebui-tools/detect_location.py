@@ -9,6 +9,7 @@ requirements: httpx
 
 import asyncio
 import httpx
+import ipaddress
 import os
 import uuid
 from pydantic import BaseModel, Field
@@ -208,9 +209,13 @@ class Tools:
         try:
             async with httpx.AsyncClient(timeout=10.0) as client:
                 url = "http://ip-api.com/json/"
-                if user_ip and not user_ip.startswith(
-                    ("127.", "10.", "172.", "192.168.", "::1")
-                ):
+                is_private = False
+                if user_ip:
+                    try:
+                        is_private = ipaddress.ip_address(user_ip).is_private
+                    except ValueError:
+                        is_private = True
+                if user_ip and not is_private:
                     url += user_ip
 
                 response = await client.get(

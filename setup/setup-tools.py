@@ -17,7 +17,10 @@ import glob
 
 WEBUI_URL = os.getenv("WEBUI_URL", "http://localhost:8080")
 ADMIN_EMAIL = os.getenv("ADMIN_EMAIL", "admin@heypico.ai")
-ADMIN_PASSWORD = os.getenv("ADMIN_PASSWORD", "heypico2026")
+ADMIN_PASSWORD = os.getenv("ADMIN_PASSWORD", "")
+if not ADMIN_PASSWORD:
+    print("[ERROR] ADMIN_PASSWORD environment variable is required")
+    sys.exit(1)
 ADMIN_NAME = os.getenv("ADMIN_NAME", "HeyPico Admin")
 
 BACKEND_URL = os.getenv("BACKEND_URL", "http://backend:8000")
@@ -225,17 +228,25 @@ def create_model(token, tool_ids):
     r = api("/api/v1/models/create", model_data, token)
     if "_error" not in r:
         print(f"[setup] Model created: {model_id}")
-    elif r.get("_error") in (400, 409, 500):
-        api("/api/v1/models/model/delete", {"id": model_id}, token)
-        r = api("/api/v1/models/create", model_data, token)
-        if "_error" not in r:
-            print(f"[setup] Model recreated: {model_id}")
-        else:
-            print(f"[setup] Model FAILED: {r.get('_error')} {r.get('_detail', '')}")
-            return False
     else:
-        print(f"[setup] Model FAILED: {r.get('_error')} {r.get('_detail', '')}")
-        return False
+        # Model already exists — try update first, then delete+recreate as fallback
+        r2 = api("/api/v1/models/model/update", model_data, token)
+        if "_error" not in r2:
+            print(f"[setup] Model updated: {model_id}")
+        else:
+            print(
+                f"[setup] Update failed ({r2.get('_error')}), trying delete+recreate..."
+            )
+            api("/api/v1/models/model/delete", {"id": model_id}, token)
+            time.sleep(1)
+            r3 = api("/api/v1/models/create", model_data, token)
+            if "_error" not in r3:
+                print(f"[setup] Model recreated: {model_id}")
+            else:
+                print(
+                    f"[setup] Model FAILED: {r3.get('_error')} {r3.get('_detail', '')}"
+                )
+                return False
 
     # Ensure params persist via model/update endpoint
     r = api("/api/v1/models/model/update", model_data, token)

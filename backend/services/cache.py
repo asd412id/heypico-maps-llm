@@ -1,9 +1,12 @@
 import json
+import time
 import redis.asyncio as aioredis
 from typing import Optional, Any
 from config import get_settings
 
 settings = get_settings()
+
+MEMORY_CACHE_MAX_SIZE = 10000
 
 
 class CacheService:
@@ -14,7 +17,8 @@ class CacheService:
 
     def __init__(self):
         self._redis: Optional[aioredis.Redis] = None
-        self._memory: dict = {}  # fallback in-memory cache
+        self._memory: dict = {}
+        self._memory_ttl: dict = {}
         self._connected = False
 
     async def connect(self):
@@ -38,6 +42,11 @@ class CacheService:
                 if value:
                     return json.loads(value)
             else:
+                exp = self._memory_ttl.get(key, 0)
+                if exp and time.time() > exp:
+                    self._memory.pop(key, None)
+                    self._memory_ttl.pop(key, None)
+                    return None
                 return self._memory.get(key)
         except Exception:
             return self._memory.get(key)
@@ -49,10 +58,16 @@ class CacheService:
             if self._connected and self._redis:
                 await self._redis.setex(key, ttl, serialized)
             else:
-                self._memory[key] = value  # no TTL for fallback, acceptable for demo
+                if len(self._memory) >= MEMORY_CACHE_MAX_SIZE:
+                    oldest = next(iter(self._memory))
+                    self._memory.pop(oldest, None)
+                    self._memory_ttl.pop(oldest, None)
+                self._memory[key] = value
+                self._memory_ttl[key] = time.time() + ttl
         except Exception as e:
             print(f"[Cache] Set error: {e}")
             self._memory[key] = value
+            self._memory_ttl[key] = time.time() + ttl
 
     async def delete(self, key: str):
         try:

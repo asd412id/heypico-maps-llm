@@ -36,14 +36,13 @@ WEBUI_URL = os.getenv("WEBUI_URL", "http://localhost:3000/api/v1")
 EMAIL = (
     sys.argv[1] if len(sys.argv) > 1 else os.getenv("ADMIN_EMAIL", "admin@heypico.ai")
 )
-PASSWORD = (
-    sys.argv[2] if len(sys.argv) > 2 else os.getenv("ADMIN_PASSWORD", "heypico2026")
-)
+PASSWORD = sys.argv[2] if len(sys.argv) > 2 else os.getenv("ADMIN_PASSWORD", "")
 TOOLS_DIR = os.path.join(os.path.dirname(__file__), "openwebui-tools")
 BACKEND_API_KEY = os.getenv("BACKEND_API_KEY", "")
 GOOGLE_MAPS_API_KEY = os.getenv("GOOGLE_MAPS_API_KEY", "")  # Used by backend only now
 BACKEND_URL = os.getenv("BACKEND_URL", "http://backend:8000")
 FRONTEND_URL = os.getenv("FRONTEND_URL", "http://localhost:3000")
+BASE_MODEL = os.getenv("DEFAULT_MODEL", "qwen2.5:7b")
 
 
 def api(path, data, token=None, method="POST"):
@@ -152,7 +151,7 @@ def main():
     model_data = {
         "id": "heypico-maps",
         "name": "HeyPico Maps Assistant",
-        "base_model_id": "qwen2.5:7b",
+        "base_model_id": BASE_MODEL,
         "params": {
             "function_calling": "native",
             "show_tool_results": False,
