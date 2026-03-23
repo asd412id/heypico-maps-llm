@@ -162,10 +162,26 @@ class Tools:
         }
 
         # Build map card data (Static Maps with numbered markers)
-        search_query = urllib.parse.quote(
-            f"{query} near {location}" if location else query
-        )
-        gmaps_search_url = f"https://www.google.com/maps/search/{search_query}"
+        # Build coordinate-based Google Maps URL so clicking the map shows the same area
+        places_with_coords = [
+            p for p in places if p.get("lat") is not None and p.get("lng") is not None
+        ]
+        if places_with_coords:
+            avg_lat = sum(p["lat"] for p in places_with_coords) / len(
+                places_with_coords
+            )
+            avg_lng = sum(p["lng"] for p in places_with_coords) / len(
+                places_with_coords
+            )
+            search_query = urllib.parse.quote(
+                f"{query} near {location}" if location else query
+            )
+            gmaps_search_url = f"https://www.google.com/maps/search/{search_query}/@{avg_lat},{avg_lng},14z"
+        else:
+            search_query = urllib.parse.quote(
+                f"{query} near {location}" if location else query
+            )
+            gmaps_search_url = f"https://www.google.com/maps/search/{search_query}"
         map_card_data = {
             "card_type": "places_map",
             "title": f"Search: {query}",
