@@ -238,8 +238,8 @@ class Tools:
                 await __event_emitter__(
                     {"type": "embeds", "data": {"embeds": [map_embed, card_embed]}}
                 )
-        except Exception:
-            pass
+        except Exception as e:
+            print(f"[google_maps_explore] Card creation failed: {e}")
 
         # Build concise result — card embed already shows full details
         place_names = ", ".join(p["name"] for p in places)

@@ -30,7 +30,9 @@ Navigate to **APIs & Services → Library** and enable:
 3. **Geocoding API** — search: `Geocoding API`
 4. **Maps Embed API** — search: `Maps Embed API`
 
-> **Note:** Static Maps API is no longer used. The interactive map is now served via the Maps Embed API iframe.
+5. **Maps Static API** — search: `Maps Static API`
+
+> **Note:** The interactive map is served via the Maps Embed API iframe. The Maps Static API is used as a server-side proxy for map thumbnail images (API key never reaches the browser).
 
 For each:
 - Click the API name
@@ -55,10 +57,11 @@ For each:
 3. Under **API restrictions**:
    - Select **Restrict key**
    - Check only the APIs you enabled:
-     - Places API (New)
-     - Directions API
-     - Geocoding API
-     - Maps Embed API
+      - Places API (New)
+      - Directions API
+      - Geocoding API
+      - Maps Embed API
+      - Maps Static API
 4. Click **Save**
 
 > ⚠️ **Never commit your API key to git.** The `.gitignore` already excludes `.env`.
@@ -114,7 +117,7 @@ docker compose up -d
 | 4 | Open WebUI starts (internal port 8080, not public) |
 | 5 | **Nginx starts on port 3000** as single public entry point |
 | 6 | `setup-tools.py` auto-creates admin account |
-| 7 | Auto-registers 3 Google Maps tools + configures valves |
+| 7 | Auto-registers 4 tools (detect_location + 3 Google Maps tools) + configures valves |
 | 8 | Auto-creates `heypico-maps` model with native tool calling |
 
 First run takes **5-10 minutes** (model download). Subsequent starts are ~30 seconds.
@@ -191,7 +194,7 @@ If the auto-setup didn't run (e.g., timeout), you can register tools manually fr
 python register-tools.py
 ```
 
-This script reads credentials from `.env` and registers all 3 tools + configures valves via the Open WebUI API. It also sets `heypico-maps` as the default model.
+This script reads credentials from `.env` and registers all 4 tools (detect_location + 3 Google Maps tools) + configures valves via the Open WebUI API. It also sets `heypico-maps` as the default model.
 
 ---
 

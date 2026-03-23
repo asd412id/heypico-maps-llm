@@ -31,6 +31,7 @@ settings = get_settings()
 router = APIRouter(prefix="/maps", tags=["Google Maps"])
 
 _SAFE_ID_RE = re.compile(r"^[\w\-]{1,128}$")
+_proxy_client = httpx.AsyncClient(timeout=15.0)
 
 
 def _validate_id(value: str, name: str = "ID"):
@@ -302,14 +303,13 @@ async def proxy_static_map(card_id: str, request: Request):
     else:
         return JSONResponse(status_code=400, content={"error": "Not a map card"})
 
-    async with httpx.AsyncClient(timeout=15.0) as client:
-        resp = await client.get(url)
-        resp.raise_for_status()
-        return Response(
-            content=resp.content,
-            media_type=resp.headers.get("content-type", "image/png"),
-            headers={"Cache-Control": "public, max-age=86400"},
-        )
+    resp = await _proxy_client.get(url)
+    resp.raise_for_status()
+    return Response(
+        content=resp.content,
+        media_type=resp.headers.get("content-type", "image/png"),
+        headers={"Cache-Control": "public, max-age=86400"},
+    )
 
 
 @router.get("/photo/{place_id}/{index}")
@@ -346,27 +346,21 @@ async def proxy_photo(place_id: str, index: int, request: Request):
         f"?maxWidthPx=400&skipHttpRedirect=true&key={api_key}"
     )
 
-    async with httpx.AsyncClient(timeout=15.0) as client:
-        resp = await client.get(media_url)
-        if resp.status_code != 200:
-            return JSONResponse(
-                status_code=502, content={"error": "Failed to fetch photo"}
-            )
-        data = resp.json()
-        photo_uri = data.get("photoUri")
-        if not photo_uri:
-            return JSONResponse(
-                status_code=502, content={"error": "No photo URI returned"}
-            )
+    resp = await _proxy_client.get(media_url)
+    if resp.status_code != 200:
+        return JSONResponse(status_code=502, content={"error": "Failed to fetch photo"})
+    data = resp.json()
+    photo_uri = data.get("photoUri")
+    if not photo_uri:
+        return JSONResponse(status_code=502, content={"error": "No photo URI returned"})
 
-        # Fetch the actual image
-        img_resp = await client.get(photo_uri)
-        img_resp.raise_for_status()
-        return Response(
-            content=img_resp.content,
-            media_type=img_resp.headers.get("content-type", "image/jpeg"),
-            headers={"Cache-Control": "public, max-age=86400"},
-        )
+    img_resp = await _proxy_client.get(photo_uri)
+    img_resp.raise_for_status()
+    return Response(
+        content=img_resp.content,
+        media_type=img_resp.headers.get("content-type", "image/jpeg"),
+        headers={"Cache-Control": "public, max-age=86400"},
+    )
 
 
 async def _find_photo_resource(
@@ -455,6 +449,7 @@ async def get_user_location(request: Request, user_id: str = "default"):
 
 
 @router.post("/geo-result")
+@limiter.limit("10/minute")
 async def store_geo_result(request: Request, body: GeoResultRequest):
     """
     Store browser geolocation result for a specific request.
@@ -489,6 +484,7 @@ async def store_geo_result(request: Request, body: GeoResultRequest):
 
 
 @router.get("/geo-result/{request_id}")
+@limiter.limit("30/minute")
 async def get_geo_result(request_id: str, request: Request):
     """
     Poll for browser geolocation result by request_id.

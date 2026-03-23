@@ -103,7 +103,7 @@ localhost:3000/*           →  open-webui:8080
 - Reviewers should be able to run `docker compose up -d` and have everything working
 - `setup/entrypoint.sh` wraps the Open WebUI startup and runs `setup-tools.py` in the background
 - `setup-tools.py` handles: admin signup, tool create (delete+recreate pattern), valve configuration, and model creation
-- The `heypico-maps` model is created with `function_calling: native` and all 3 tools pre-attached
+- The `heypico-maps` model is created with `function_calling: native` and all 4 tools pre-attached (detect_location + 3 Google Maps tools)
 - `DEFAULT_MODELS=heypico-maps` ensures the model is auto-selected for new chats
 
 ---

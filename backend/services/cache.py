@@ -48,7 +48,8 @@ class CacheService:
                     self._memory_ttl.pop(key, None)
                     return None
                 return self._memory.get(key)
-        except Exception:
+        except Exception as e:
+            print(f"[Cache] Get error for {key}: {e}")
             return self._memory.get(key)
         return None
 
