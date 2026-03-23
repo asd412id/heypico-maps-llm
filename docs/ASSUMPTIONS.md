@@ -292,3 +292,27 @@ localhost:3000/*           →  open-webui:8080
 - `detect_location` is called **first** when the user mentions "near me", "nearby", "terdekat", etc.
 - It returns precise GPS coordinates that are then passed to `search_places` or `explore_area` as `latitude`/`longitude` parameters
 - This two-step flow (detect → search) gives much more accurate results than IP-based geolocation alone
+
+---
+
+## 20. Local LLM Limitations & Model Dependency
+
+**Assumption:** The system's overall quality and reliability is directly influenced by the capabilities of the local LLM model.
+
+**Reasoning:**
+- The system relies on the LLM to: (1) recognize user intent, (2) decide which tool(s) to call, (3) pass correct parameters, and (4) present results naturally
+- All of these steps depend on the model's instruction-following ability and native tool calling support
+- Smaller models (≤7B parameters) may:
+  - Miss tool calls entirely and answer from memory (hallucinate place names)
+  - Pass incorrect parameter types (e.g. strings instead of numbers) — mitigated by defensive casting in tools
+  - Fail at multi-step reasoning (e.g. not calling `detect_my_location` before `get_directions` when the user says "from my location")
+  - Ignore system prompt rules about not inventing place data
+- Larger models (14B+) significantly improve all of these behaviors
+- The system includes several mitigations for small model limitations:
+  - **Defensive type casting**: Tools cast all parameters with `int()`/`float()` to handle string inputs
+  - **Coordinate fallback**: If the LLM passes null coordinates, tools automatically fetch cached GPS data
+  - **Origin phrase detection**: The `get_directions` tool detects phrases like "my location" / "lokasi saya" in the origin parameter and resolves them to actual coordinates
+  - **Explicit system prompt rules**: Detailed step-by-step instructions for multi-step flows (rules 8-11 in DIRECTIONS RULES)
+- Despite these mitigations, the LLM model remains the single biggest factor in user experience quality
+
+**Recommendation:** Use `qwen2.5:14b` or larger for production use. The default `qwen2.5:7b` is a good balance of size and capability for demo/testing purposes.

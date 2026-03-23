@@ -324,6 +324,34 @@ heypico-maps-llm/
 | **Google Maps links don't open on desktop** | Open WebUI renders tool embeds inside sandboxed iframes without `allow-popups`. Desktop browsers block `<a target="_blank">` inside these iframes. | On desktop, use the Google Maps links in the LLM's text response (markdown links work normally). |
 | **Links work on mobile** | On mobile (Android/iOS), tapping a Maps link in the card triggers the OS intent system, which opens the Google Maps app directly — bypassing the sandbox. | No workaround needed; this is the expected behavior. |
 | **Static map images (not interactive)** | Maps use Google Static Maps API images. Zoom/pan is not possible inside the chat. | Click the Google Maps link to open the full interactive map. |
+| **Local LLM accuracy varies** | The system's ability to correctly call tools, follow multi-step instructions (e.g. detect location → get directions), and produce well-structured responses depends heavily on the local LLM model's capabilities. Smaller models (≤7B) may occasionally miss tool calls, pass incorrect parameters, or hallucinate place names instead of using the tools. | Use a larger model for better accuracy — set `DEFAULT_MODEL=qwen2.5:14b` in `.env` if you have 8GB+ VRAM. You can also try different models that support native tool calling (check Ollama registry for the `tools` tag). |
+| **Multi-step tool calling** | Some queries require the LLM to chain multiple tool calls (e.g. "directions from my location to X" requires `detect_my_location` → `get_directions`). Smaller models may struggle with this multi-step reasoning and skip the first step. | The system prompt includes explicit rules to guide the LLM, but results vary by model. Larger models (14B+) handle multi-step flows more reliably. |
+
+---
+
+## Choosing a Model
+
+The quality of the maps assistant experience is **directly influenced by the local LLM model** you choose. The system is designed to work with any Ollama model that supports **native tool calling**, but larger models produce significantly better results.
+
+| Model | Size | VRAM | Tool Calling Quality | Notes |
+|-------|------|------|---------------------|-------|
+| `qwen2.5:3b` | ~2 GB | 4 GB | ⚠️ Basic | Often misses multi-step flows; may hallucinate instead of calling tools |
+| `qwen2.5:7b` | ~4.7 GB | 6 GB | ✅ Good | Default. Handles most queries well; occasional issues with complex chains |
+| `qwen2.5:14b` | ~9 GB | 10 GB | ✅✅ Very Good | Recommended if you have the VRAM. Reliable multi-step tool calling |
+| `qwen2.5:32b` | ~19 GB | 24 GB | ✅✅✅ Excellent | Best accuracy; requires high-end GPU |
+
+To change the model, edit `.env`:
+```bash
+DEFAULT_MODEL=qwen2.5:14b
+```
+Then restart:
+```bash
+docker compose down && docker compose up -d
+```
+
+> **Tip:** You can also use other Ollama models that support the `tools` tag (e.g. `llama3.1`, `mistral`, `command-r`). Check the [Ollama Library](https://ollama.com/library) and filter by the `tools` capability.
+
+> **Important:** The system prompt, tool schemas, and parameter handling are all optimized for reliable tool calling. However, the LLM is ultimately responsible for deciding *when* and *how* to call tools. If the model doesn't support native tool calling well, the maps features will not work correctly regardless of system configuration.
 
 ---
 
