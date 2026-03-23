@@ -1,6 +1,7 @@
 import re
 import uuid
-from urllib.parse import unquote, urlparse
+from html import escape as html_escape
+from urllib.parse import unquote, urlparse, quote as url_quote
 
 import httpx
 from fastapi import APIRouter, Depends, Request
@@ -227,6 +228,7 @@ async def render_card(card_id: str, request: Request):
     Render a rich HTML info card from stored data.
     No clickable links — pure informational display.
     """
+    _validate_id(card_id, "card_id")
     cache: CacheService = request.app.state.cache
     data = await cache.get(f"card:{card_id}")
     if not data:
@@ -332,10 +334,6 @@ async def proxy_photo(place_id: str, index: int, request: Request):
     if cached_photo and isinstance(cached_photo, dict) and cached_photo.get("resource"):
         photo_resource = cached_photo["resource"]
     else:
-        # Scan recent place search results for this place_id
-        # The GoogleMapsService stores results with photo_resource in each place dict
-        # We look through the cache to find it
-        google_svc: GoogleMapsService = request.app.state.google_maps
         photo_resource = await _find_photo_resource(cache, place_id, index)
 
     if not photo_resource:
@@ -397,23 +395,25 @@ async def proxy_embed(request: Request, type: str = "directions"):
         return JSONResponse(status_code=400, content={"error": "Invalid embed type"})
 
     # Rebuild query params, excluding 'type' and any 'key' param
+    # URL-encode values to prevent XSS injection
     params = []
     for k, v in request.query_params.items():
         if k in ("type", "key"):
             continue
-        params.append(f"{k}={v}")
+        params.append(f"{url_quote(k, safe='')}={url_quote(v, safe='')}")
 
     api_key = settings.google_maps_api_key
     params.append(f"key={api_key}")
 
     embed_src = f"https://www.google.com/maps/embed/v1/{type}?{'&'.join(params)}"
+    safe_embed_src = html_escape(embed_src)
 
     html = f"""<!DOCTYPE html><html><head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <style>*{{margin:0;padding:0}}html,body,iframe{{width:100%;height:100%;border:0}}</style>
 </head><body>
-<iframe src="{embed_src}" allowfullscreen loading="lazy" referrerpolicy="no-referrer-when-downgrade"></iframe>
+<iframe src="{safe_embed_src}" allowfullscreen loading="lazy" referrerpolicy="no-referrer-when-downgrade"></iframe>
 </body></html>"""
 
     return HTMLResponse(content=html)
@@ -425,6 +425,7 @@ async def store_user_location(request: Request, body: UserLocationRequest):
     Store the user's browser-detected geolocation coordinates.
     Called from the geolocation card via JavaScript fetch().
     """
+    _validate_id(body.user_id, "user_id")
     cache: CacheService = request.app.state.cache
     await cache.set(
         f"user_location:{body.user_id}",
@@ -445,6 +446,7 @@ async def get_user_location(request: Request, user_id: str = "default"):
     Retrieve the user's stored browser geolocation.
     Returns null fields if no location stored.
     """
+    _validate_id(user_id, "user_id")
     cache: CacheService = request.app.state.cache
     data = await cache.get(f"user_location:{user_id}")
     if not data:
@@ -459,6 +461,8 @@ async def store_geo_result(request: Request, body: GeoResultRequest):
     Called from the GPS popup after detection completes (success or failure).
     No API key required — accessed from user's browser.
     """
+    _validate_id(body.request_id, "request_id")
+    _validate_id(body.user_id, "user_id")
     cache: CacheService = request.app.state.cache
     result = {
         "status": body.status,

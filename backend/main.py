@@ -72,7 +72,11 @@ async def global_exception_handler(request: Request, exc: Exception):
 
 @app.exception_handler(ValueError)
 async def value_error_handler(request: Request, exc: ValueError):
-    return JSONResponse(status_code=400, content={"error": str(exc)})
+    msg = str(exc)
+    # Sanitize: strip internal details from Google API errors
+    if "API error" in msg or "error_message" in msg:
+        msg = "Invalid request or service temporarily unavailable"
+    return JSONResponse(status_code=400, content={"error": msg})
 
 
 # ── Routers ───────────────────────────────────────────────────────────────────
