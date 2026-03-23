@@ -182,14 +182,32 @@ def configure_valves(token, tool_ids):
 
 
 def configure_user_settings(token):
-    """Enable user location, iframe sandbox, and artifact detection for admin user."""
-    settings = {
+    """Enable user location, iframe sandbox, and artifact detection for admin user.
+    Uses read-merge-write to avoid overwriting existing settings.
+    """
+    # First, read existing settings
+    existing = api("/api/v1/users/user/settings", token=token, method="GET")
+    if "_error" in existing:
+        existing = {}
+
+    # Merge our required settings at root level
+    desired = {
         "userLocation": True,
         "iframeSandboxAllowSameOrigin": True,
         "iframeSandboxAllowForms": True,
         "detectArtifacts": True,
     }
-    r = api("/api/v1/users/user/settings/update", settings, token)
+    merged = {**existing, **desired}
+
+    # Also ensure ui sub-object has the same values (frontend reads from both)
+    ui = merged.get("ui", {})
+    if isinstance(ui, dict):
+        ui = {**ui, **desired}
+    else:
+        ui = {**desired}
+    merged["ui"] = ui
+
+    r = api("/api/v1/users/user/settings/update", merged, token)
     if "_error" not in r:
         print("[setup] User settings configured: location, iframe sandbox, artifacts")
     else:
