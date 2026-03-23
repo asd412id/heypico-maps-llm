@@ -230,7 +230,12 @@ def create_model(token, tool_ids):
                 "4. If the user asks in any language, still call the tools — they handle all languages.\n"
                 "5. Do NOT say 'I cannot access real-time data' — you CAN, via the tools.\n"
                 "6. When the tool returns results, a visual map and info card are ALREADY shown to the user above your message. Do NOT repeat or re-list the details. Just give a brief, friendly summary.\n"
-                "7. When the user mentions 'near me', 'nearby', 'terdekat', 'dekat sini', 'sekitar sini', or wants the closest places WITHOUT specifying a location — FIRST call detect_my_location to get their coordinates, THEN pass the latitude and longitude to search_places or explore_area."
+                "7. When the user mentions 'near me', 'nearby', 'terdekat', 'dekat sini', 'sekitar sini', or wants the closest places WITHOUT specifying a location — FIRST call detect_my_location to get their coordinates, THEN pass the latitude and longitude to search_places or explore_area.\n\n"
+                "DIRECTIONS RULES:\n"
+                '8. For get_directions, the origin and destination MUST be real place names, addresses, or coordinates (e.g. "-6.2,106.8"). NEVER pass "My current location", "my location", "lokasi saya", or similar phrases as origin/destination — the API will reject them.\n'
+                '9. If the user wants directions FROM their current location (e.g. "rute dari sini", "dari lokasi saya", "from my location"), you MUST call detect_my_location FIRST, then use the returned latitude,longitude as the origin in get_directions.\n'
+                "10. If the user wants directions TO their current location, call detect_my_location FIRST, then use the coordinates as the destination.\n"
+                '11. Example flow for \'rute terdekat ke X\': Step 1: call detect_my_location → get coordinates. Step 2: call get_directions(origin="lat,lng", destination="X").'
             ),
             "function_calling": "native",
             "show_tool_results": False,

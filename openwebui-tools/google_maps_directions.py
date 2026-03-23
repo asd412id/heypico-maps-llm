@@ -12,7 +12,7 @@ import os
 import re
 import urllib.parse
 from pydantic import BaseModel, Field
-from typing import Literal
+from typing import Literal, Optional
 
 
 def _card_url(frontend_url: str, card_id: str) -> str:
@@ -49,15 +49,37 @@ class Tools:
         destination: str,
         travel_mode: Literal["driving", "walking", "transit", "bicycling"] = "driving",
         __event_emitter__=None,
+        __user__: dict = None,
     ) -> str:
         """
         Get turn-by-turn directions between two locations. Shows a rich info card with route and step-by-step instructions.
 
-        :param origin: Starting point, e.g. "Monas Jakarta" or "Jl. Sudirman No.1"
+        :param origin: Starting point — use a real place name or address (e.g. "Monas Jakarta", "Jl. Sudirman No.1") or coordinates like "-6.2,106.8". NEVER use "My current location" or "my location".
         :param destination: End point, e.g. "Sarinah Jakarta" or "Bandung, West Java"
         :param travel_mode: Transportation mode: driving, walking, transit, or bicycling
         :return: Info card with directions and route steps
         """
+        # Auto-fix: if origin looks like "my location"/"current location", resolve to actual coordinates
+        origin_lower = (origin or "").lower().strip()
+        location_phrases = [
+            "my current location",
+            "my location",
+            "current location",
+            "lokasi saya",
+            "lokasi saya sekarang",
+            "lokasiku",
+            "lokasiku sekarang",
+            "posisi saya",
+            "tempat saya",
+            "di sini",
+            "dari sini",
+            "sini",
+        ]
+        if any(phrase in origin_lower for phrase in location_phrases):
+            stored = await self._get_stored_location(__user__)
+            if stored:
+                origin = f"{stored['latitude']},{stored['longitude']}"
+
         if __event_emitter__:
             await __event_emitter__(
                 {
@@ -195,3 +217,21 @@ class Tools:
             f"Give a brief, friendly summary (distance, duration, travel mode). "
             f"Do NOT re-list all the route steps \u2014 the card already shows them."
         )
+
+    async def _get_stored_location(self, user: dict = None) -> Optional[dict]:
+        """Fetch cached user GPS location from backend."""
+        user_id = (user or {}).get("id", "default")
+        try:
+            async with httpx.AsyncClient(timeout=5.0) as client:
+                resp = await client.get(
+                    f"{self.valves.backend_url}/maps/user-location",
+                    params={"user_id": user_id},
+                    headers={"X-API-Key": self.valves.backend_api_key},
+                )
+                if resp.status_code == 200:
+                    data = resp.json()
+                    if data.get("found"):
+                        return data
+        except Exception:
+            pass
+        return None
