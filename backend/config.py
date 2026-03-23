@@ -15,12 +15,12 @@ class Settings(BaseSettings):
     rate_limit_per_minute: int = 60
     rate_limit_per_day: int = 1000
 
-# Redis / Cache
-redis_url: str = "redis://localhost:6379"
-cache_ttl_places_seconds: int = 3600
-cache_ttl_directions_seconds: int = 1800
-cache_ttl_geocode_seconds: int = 86400
-cache_ttl_user_location_seconds: int = 60  # User GPS location cache (1 minute)
+    # Redis / Cache
+    redis_url: str = "redis://localhost:6379"
+    cache_ttl_places_seconds: int = 3600
+    cache_ttl_directions_seconds: int = 1800
+    cache_ttl_geocode_seconds: int = 86400
+    cache_ttl_user_location_seconds: int = 60  # User GPS location cache (1 minute)
 
     # App
     debug: bool = False
