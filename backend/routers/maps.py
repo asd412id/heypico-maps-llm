@@ -435,7 +435,7 @@ async def store_user_location(request: Request, body: UserLocationRequest):
             "accuracy": body.accuracy,
             "source": "browser",
         },
-        ttl=3600,
+        ttl=settings.cache_ttl_user_location_seconds,
     )
     return {"status": "ok", "latitude": body.latitude, "longitude": body.longitude}
 
@@ -482,7 +482,7 @@ async def store_geo_result(request: Request, body: GeoResultRequest):
                 "accuracy": body.accuracy,
                 "source": "browser",
             },
-            ttl=3600,
+            ttl=settings.cache_ttl_user_location_seconds,
         )
 
     return {"status": "stored"}
