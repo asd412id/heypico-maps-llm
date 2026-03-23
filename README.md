@@ -21,6 +21,22 @@ It also supports **"near me" queries** — when the user asks about nearby place
 
 ---
 
+## Screenshots
+
+### Login
+![Login](docs/screenshots/01-login.png)
+
+### Chat Interface
+![Chat Interface](docs/screenshots/02-chat-interface.png)
+
+### Place Search — SCBD Jakarta (Map View)
+![Place Search Map](docs/screenshots/03-place-search.png)
+
+### Place Search — Results & Info Cards
+![Place Search Cards](docs/screenshots/04-place-search.png)
+
+---
+
 ## Architecture
 
 ```

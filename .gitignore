@@ -38,5 +38,4 @@ redis_data/
 webui_data/
 
 # ─── Screenshots ───
-docs/screenshots/*.png
-docs/screenshots/*.jpg
+# (kept in repo for README display)

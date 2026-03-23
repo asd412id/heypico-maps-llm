@@ -1,6 +1,6 @@
 """
 title: Detect My Location
-description: Detect the user's current location via browser GPS geolocation (with IP fallback). Use this when the user asks about places "near me", "nearby", "terdekat", or "sekitar sini".
+description: Detect the user's current GPS location. ONLY use this when the user explicitly wants results near their CURRENT location ("near me", "nearby", "dekat saya", "terdekat", "sekitar sini", "di sekitar saya", "lokasi saya"). DO NOT use this when the user specifies any location name, city, address, or landmark in their query — in that case, pass the location directly to search_places or explore_area instead.
 author: HeyPico AI Test
 version: 3.0.0
 license: MIT
@@ -51,7 +51,28 @@ class Tools:
     ) -> str:
         """
         Detect the user's current location using browser GPS geolocation (precise) with IP geolocation fallback.
-        Call this FIRST when the user asks about places "near me", "nearby", "terdekat", "sekitar sini", or wants to find the closest place without specifying a location.
+
+        ONLY call this tool when the user explicitly wants results near their CURRENT physical location, using
+        phrases such as: "near me", "nearby", "closest to me", "terdekat", "dekat saya", "sekitar sini",
+        "di sekitar saya", "sekitar aku", "lokasi saya sekarang", "di dekat saya".
+
+        DO NOT call this tool when:
+        - The user specifies any location by name (city, neighborhood, landmark, address, region, country).
+          Examples: "SCBD Jakarta", "Bandung", "Jl. Sudirman", "Bali", "Sinjai", "Makassar".
+        - The query contains an explicit location keyword like "in [place]", "at [place]", "near [place name]",
+          "di [kota]", "sekitar [nama tempat]", "di daerah [X]".
+        - The user asks about a specific named area, district, or address.
+
+        CORRECT usage:
+          "Find coffee shops near me" → call detect_my_location first
+          "Restaurants nearby" → call detect_my_location first
+          "Tempat makan terdekat" → call detect_my_location first
+
+        WRONG usage (DO NOT call detect_my_location for these):
+          "Coffee shops in SCBD Jakarta" → pass location="SCBD Jakarta" directly to search_places
+          "Restaurants in Bandung" → pass location="Bandung" directly to search_places
+          "Find places near Monas" → pass location="Monas Jakarta" directly to search_places
+          "Kopi di Makassar" → pass location="Makassar" directly to search_places
 
         :return: Detected location with city, region, country, and coordinates (latitude/longitude)
         """
