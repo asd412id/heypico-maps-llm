@@ -20,7 +20,7 @@ class Settings(BaseSettings):
     cache_ttl_places_seconds: int = 3600
     cache_ttl_directions_seconds: int = 1800
     cache_ttl_geocode_seconds: int = 86400
-    cache_ttl_user_location_seconds: int = 60  # User GPS location cache (1 minute)
+    cache_ttl_user_location_seconds: int = 300  # User GPS location cache (5 minutes)
 
     # App
     debug: bool = False

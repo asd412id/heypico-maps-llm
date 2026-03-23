@@ -54,7 +54,19 @@ class Tools:
         longitude: Optional[float] = None,
         max_results: int = 5,
         __event_emitter__=None,
+        __user__: dict = None,
     ) -> str:
+        """
+        Search for places (restaurants, cafes, attractions, etc.) near a location.
+        Returns a rich info card and place results with Google Maps links.
+
+        :param query: What to search for, e.g. "pizza restaurant", "coffee shop", "tourist attraction"
+        :param location: Location to search near, e.g. "Jakarta, Indonesia" or "SCBD Jakarta". If not provided, returns general results.
+        :param latitude: Latitude coordinate from detect_my_location (e.g. -6.2). Use this for "near me" queries.
+        :param longitude: Longitude coordinate from detect_my_location (e.g. 106.8). Use this for "near me" queries.
+        :param max_results: Number of results to show (1-10)
+        :return: Info card and place results with details
+        """
         # Defensive cast — LLMs (esp. smaller models) sometimes pass args as strings
         try:
             max_results = int(max_results)
@@ -70,17 +82,13 @@ class Tools:
                 longitude = float(longitude)
             except (TypeError, ValueError):
                 longitude = None
-        """
-        Search for places (restaurants, cafes, attractions, etc.) near a location.
-        Returns a rich info card and place results with Google Maps links.
 
-        :param query: What to search for, e.g. "pizza restaurant", "coffee shop", "tourist attraction"
-        :param location: Location to search near, e.g. "Jakarta, Indonesia" or "SCBD Jakarta". If not provided, returns general results.
-        :param latitude: Latitude coordinate from detect_my_location (e.g. -6.2). Use this for "near me" queries.
-        :param longitude: Longitude coordinate from detect_my_location (e.g. 106.8). Use this for "near me" queries.
-        :param max_results: Number of results to show (1-10)
-        :return: Info card and place results with details
-        """
+        # Auto-fallback: if LLM didn't pass coordinates, fetch from cached user location
+        if latitude is None or longitude is None:
+            stored = await self._get_stored_location(__user__)
+            if stored:
+                latitude = stored["latitude"]
+                longitude = stored["longitude"]
         if __event_emitter__:
             await __event_emitter__(
                 {
@@ -247,3 +255,21 @@ class Tools:
             f"Give a brief, friendly summary of the results. Do NOT re-list all the places — the card already shows them. "
             f"You may highlight 1-2 interesting picks if relevant."
         )
+
+    async def _get_stored_location(self, user: dict = None) -> Optional[dict]:
+        """Fetch cached user GPS location from backend."""
+        user_id = (user or {}).get("id", "default")
+        try:
+            async with httpx.AsyncClient(timeout=5.0) as client:
+                resp = await client.get(
+                    f"{self.valves.backend_url}/maps/user-location",
+                    params={"user_id": user_id},
+                    headers={"X-API-Key": self.valves.backend_api_key},
+                )
+                if resp.status_code == 200:
+                    data = resp.json()
+                    if data.get("found"):
+                        return data
+        except Exception:
+            pass
+        return None

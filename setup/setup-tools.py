@@ -5,6 +5,7 @@ Auto-setup script for Open WebUI — runs inside the open-webui container.
 2. Register all 4 tools (detect_location + 3 Google Maps tools)
 3. Configure Valves (API keys, backend URL, frontend URL)
 4. Create custom model with native tool calling enabled
+5. Configure user settings (location, iframe sandbox, artifacts)
 """
 
 import os
@@ -180,6 +181,21 @@ def configure_valves(token, tool_ids):
             )
 
 
+def configure_user_settings(token):
+    """Enable user location, iframe sandbox, and artifact detection for admin user."""
+    settings = {
+        "userLocation": True,
+        "iframeSandboxAllowSameOrigin": True,
+        "iframeSandboxAllowForms": True,
+        "detectArtifacts": True,
+    }
+    r = api("/api/v1/users/user/settings/update", settings, token)
+    if "_error" not in r:
+        print("[setup] User settings configured: location, iframe sandbox, artifacts")
+    else:
+        print(f"[setup] User settings FAILED: {r.get('_error')} {r.get('_detail', '')}")
+
+
 def set_default_model(token, model_id="heypico-maps"):
     r = api(
         "/api/v1/configs/models",
@@ -287,6 +303,7 @@ def main():
     ]
     create_model(token, all_tools)
     set_default_model(token, "heypico-maps")
+    configure_user_settings(token)
 
     print(f"[setup] === Setup Complete ===")
     print(f"[setup] Admin: {ADMIN_EMAIL}")
