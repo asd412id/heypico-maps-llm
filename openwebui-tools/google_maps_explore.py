@@ -52,6 +52,17 @@ class Tools:
         longitude: Optional[float] = None,
         __event_emitter__=None,
     ) -> str:
+        # Defensive cast — LLMs (esp. smaller models) sometimes pass args as strings
+        if latitude is not None:
+            try:
+                latitude = float(latitude)
+            except (TypeError, ValueError):
+                latitude = None
+        if longitude is not None:
+            try:
+                longitude = float(longitude)
+            except (TypeError, ValueError):
+                longitude = None
         """
         Explore an area and discover the top places in a chosen category. Shows a rich info card with recommendations.
 

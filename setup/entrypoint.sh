@@ -2,9 +2,6 @@
 # Open WebUI entrypoint wrapper — runs original start.sh + auto-setup
 # Starts Open WebUI normally, then registers tools in background
 
-# Patch iframe sandbox to allow popups (for "Open in Google Maps" links)
-sh /app/setup/patch-sandbox.sh
-
 # Start Open WebUI (original entrypoint)
 bash start.sh &
 WEBUI_PID=$!

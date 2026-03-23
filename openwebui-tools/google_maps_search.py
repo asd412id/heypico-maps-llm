@@ -55,6 +55,21 @@ class Tools:
         max_results: int = 5,
         __event_emitter__=None,
     ) -> str:
+        # Defensive cast — LLMs (esp. smaller models) sometimes pass args as strings
+        try:
+            max_results = int(max_results)
+        except (TypeError, ValueError):
+            max_results = 5
+        if latitude is not None:
+            try:
+                latitude = float(latitude)
+            except (TypeError, ValueError):
+                latitude = None
+        if longitude is not None:
+            try:
+                longitude = float(longitude)
+            except (TypeError, ValueError):
+                longitude = None
         """
         Search for places (restaurants, cafes, attractions, etc.) near a location.
         Returns a rich info card and place results with Google Maps links.
@@ -87,7 +102,9 @@ class Tools:
                         "latitude": latitude,
                         "longitude": longitude,
                         "radius_meters": self.valves.default_radius_meters,
-                        "max_results": min(max_results, 10),
+                        "max_results": min(
+                            max_results, 10
+                        ),  # already cast to int above
                     },
                     headers={"X-API-Key": self.valves.backend_api_key},
                 )

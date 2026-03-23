@@ -36,7 +36,10 @@ def render_places_card(data: dict) -> str:
 
         price_html = ""
         if price_level is not None:
-            price_html = f'<span class="pr">{"$" * (price_level + 1)}</span>'
+            try:
+                price_html = f'<span class="pr">{"$" * (int(price_level) + 1)}</span>'
+            except (TypeError, ValueError):
+                pass
 
         status_html = ""
         if open_now is not None:
