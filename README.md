@@ -10,11 +10,14 @@ A local LLM system that responds to natural language queries about places (resta
 
 Ask the LLM things like:
 - *"Where can I eat good sushi near SCBD Jakarta?"*
+- *"Find restaurants near me"* (GPS-based nearby search)
 - *"How do I get from Monas to Sarinah?"*
 - *"Explore cafes in Bandung Old Town"*
 - *"Find tourist attractions near Seminyak Bali"*
 
-The LLM detects the intent, calls the appropriate Google Maps tool via **native function calling**, and returns an **interactive embedded map** right in the chat along with a list of places with clickable Google Maps links.
+The LLM detects the intent, calls the appropriate Google Maps tool via **native function calling**, and returns a **static map image** with numbered markers right in the chat, along with a rich info card and clickable Google Maps links (works on mobile; see [Known Limitations](#known-limitations)).
+
+It also supports **"near me" queries** — when the user asks about nearby places, the system detects their location via **browser GPS geolocation** (with IP fallback) and searches around their precise coordinates.
 
 ---
 
@@ -38,7 +41,7 @@ Browser
 │ Chat UI             │              │ Google Maps API Proxy     │
 │ HeyPico Maps model  │              │ • Rate Limiting           │
 │ (qwen2.5:7b)        │              │ • Response Caching        │
-│ 3 custom tools      │              │ • Input Sanitization      │
+│ 4 custom tools      │              │ • Input Sanitization      │
 │ native tool calling │              │ • /maps/embed  (public)   │
 └─────────────────────┘              │ • /maps/open   (public)   │
           │                          └──────────────────────────┘
@@ -121,7 +124,7 @@ This will automatically:
 3. Start FastAPI backend (Google Maps proxy)
 4. Start Open WebUI
 5. Start **Nginx** (single public entry point on port 3000)
-6. **Auto-register** all 3 Google Maps tools
+6. **Auto-register** all 4 Google Maps tools (including GPS location detection)
 7. **Auto-configure** tool valves (API keys, backend URL, frontend URL)
 8. **Auto-create** `heypico-maps` model with native tool calling enabled
 
@@ -140,9 +143,9 @@ The setup is **100% automated** — no manual steps in the Open WebUI UI:
 | What | How |
 |------|-----|
 | Admin account | Created automatically via API (`admin@heypico.ai`) |
-| 3 Google Maps tools | Registered via `setup/setup-tools.py` on first boot |
+| 4 Google Maps tools | Registered via `setup/setup-tools.py` on first boot |
 | Tool valves (API keys) | Configured automatically from `.env` values |
-| `heypico-maps` model | Created with `function_calling: native` + all 3 tools attached |
+| `heypico-maps` model | Created with `function_calling: native` + all 4 tools attached |
 | Default model | `heypico-maps` auto-selected for new chats |
 
 The automation runs inside the Open WebUI container via `setup/entrypoint.sh` → `setup/setup-tools.py`.
@@ -162,6 +165,10 @@ python register-tools.py
 |--------|----------|-------------|
 | GET | `/api/maps/embed?url=...&height=450` | HTML wrapper for Google Maps iframe with postMessage auto-resize |
 | GET | `/api/maps/open?url=...` | Redirect page that bypasses COOP to open Google Maps in new tab |
+| GET | `/api/maps/user-location/card/{user_id}` | Geolocation card with "Allow Location" button |
+| GET | `/api/maps/user-location/gps/{user_id}` | GPS popup for browser geolocation detection |
+| POST | `/api/maps/geo-result` | Store GPS result from popup (used by geolocation flow) |
+| GET | `/api/maps/geo-result/{request_id}` | Poll for GPS result (used by geolocation flow) |
 
 ### Internal endpoints (require `X-API-Key` header)
 
@@ -223,6 +230,7 @@ heypico-maps-llm/
 │       └── schemas.py          # Pydantic request/response models
 │
 ├── openwebui-tools/            # Open WebUI Custom Tools
+│   ├── detect_location.py      # Tool: Detect user's GPS location (with IP fallback)
 │   ├── google_maps_search.py   # Tool: Search places
 │   ├── google_maps_directions.py # Tool: Directions
 │   └── google_maps_explore.py  # Tool: Explore area by category
@@ -249,7 +257,8 @@ heypico-maps-llm/
 | Backend API | Python FastAPI |
 | Reverse Proxy | Nginx (single public entry point) |
 | Cache | Redis 7 |
-| Maps | Google Maps Platform (Places API New, Directions, Geocoding, Embed) |
+| Maps | Google Maps Platform (Places API New, Directions, Geocoding, Static Maps) |
+| GPS Location | Browser Geolocation API (popup-based, with IP fallback) |
 | Containerization | Docker Compose (5 services) |
 | Rate Limiting | SlowAPI |
 
@@ -278,8 +287,8 @@ heypico-maps-llm/
 **Map not showing (blocked/error icon):**
 → Verify **Maps Embed API** is enabled in Google Cloud Console. The API key must be allowed for your domain/localhost.
 
-**Map links open in same tab or show COOP error:**
-→ Open WebUI iframe sandbox settings: enable **"iframe Sandbox Allow Same Origin"** in Open WebUI → Settings → Interface.
+**Google Maps links in place cards don't work on desktop:**
+→ This is a known limitation. Open WebUI renders embeds in sandboxed iframes without `allow-popups`, which blocks links on desktop browsers. **Links work on mobile** (opens Google Maps app). On desktop, use the Google Maps links in the text response instead.
 
 **Docker GPU error:**
 → Remove the `deploy.resources.reservations` block from `docker-compose.yml` if you don't have an NVIDIA GPU. The model runs on CPU (slower but functional).
@@ -289,6 +298,16 @@ heypico-maps-llm/
 
 **`FRONTEND_URL` wrong (embed links broken):**
 → If deployed on a server, set `FRONTEND_URL=https://your-domain.com` in `.env` so embed/redirect URLs use the correct public URL.
+
+---
+
+## Known Limitations
+
+| Limitation | Explanation | Workaround |
+|------------|-------------|------------|
+| **Google Maps links don't open on desktop** | Open WebUI renders tool embeds inside sandboxed iframes without `allow-popups`. Desktop browsers block `<a target="_blank">` inside these iframes. | On desktop, use the Google Maps links in the LLM's text response (markdown links work normally). |
+| **Links work on mobile** | On mobile (Android/iOS), tapping a Maps link in the card triggers the OS intent system, which opens the Google Maps app directly — bypassing the sandbox. | No workaround needed; this is the expected behavior. |
+| **Static map images (not interactive)** | Maps use Google Static Maps API images. Zoom/pan is not possible inside the chat. | Click the Google Maps link to open the full interactive map. |
 
 ---
 

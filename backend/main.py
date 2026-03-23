@@ -51,11 +51,7 @@ app.add_exception_handler(RateLimitExceeded, rate_limit_exceeded_handler)
 # In production: replace "*" with your actual domain
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[
-        "http://localhost:3000",
-        "http://open-webui:8080",
-        "http://127.0.0.1:3000",
-    ],
+    allow_origins=[o.strip() for o in settings.cors_origins.split(",") if o.strip()],
     allow_credentials=True,
     allow_methods=["GET", "POST"],
     allow_headers=["Content-Type", "X-API-Key"],

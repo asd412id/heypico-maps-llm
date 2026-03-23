@@ -23,6 +23,11 @@ class Settings(BaseSettings):
     debug: bool = False
     backend_url: str = "http://localhost:8000"
 
+    # CORS
+    cors_origins: str = (
+        "http://localhost:3000,http://127.0.0.1:3000,http://open-webui:8080"
+    )
+
     class Config:
         env_file = ".env"
         case_sensitive = False

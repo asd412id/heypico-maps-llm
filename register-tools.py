@@ -41,7 +41,7 @@ PASSWORD = (
 )
 TOOLS_DIR = os.path.join(os.path.dirname(__file__), "openwebui-tools")
 BACKEND_API_KEY = os.getenv("BACKEND_API_KEY", "")
-GOOGLE_MAPS_API_KEY = os.getenv("GOOGLE_MAPS_API_KEY", "")
+GOOGLE_MAPS_API_KEY = os.getenv("GOOGLE_MAPS_API_KEY", "")  # Used by backend only now
 BACKEND_URL = os.getenv("BACKEND_URL", "http://backend:8000")
 FRONTEND_URL = os.getenv("FRONTEND_URL", "http://localhost:3000")
 
@@ -66,9 +66,9 @@ def api(path, data, token=None, method="POST"):
 
 
 def main():
-    if not BACKEND_API_KEY or not GOOGLE_MAPS_API_KEY:
-        print("WARNING: BACKEND_API_KEY or GOOGLE_MAPS_API_KEY not set.")
-        print("Valve configuration may fail. Set them in .env or environment.")
+    if not BACKEND_API_KEY:
+        print("WARNING: BACKEND_API_KEY not set.")
+        print("Valve configuration may fail. Set it in .env or environment.")
 
     # Login
     print(f"Signing in as {EMAIL}...")
@@ -137,7 +137,6 @@ def main():
             "backend_url": BACKEND_URL,
             "frontend_url": FRONTEND_URL,
             "backend_api_key": BACKEND_API_KEY,
-            "google_maps_api_key": GOOGLE_MAPS_API_KEY,
         }
         if "search" in tool_id:
             valves["default_radius_meters"] = 5000
@@ -147,6 +146,43 @@ def main():
             print(f"  Valves: FAILED {vr['_error']} {vr['_body'][:100]}")
         else:
             print("  Valves: configured")
+
+    # Update model params (hide tool results, update system prompt)
+    print("\nUpdating model params...")
+    model_data = {
+        "id": "heypico-maps",
+        "name": "HeyPico Maps Assistant",
+        "base_model_id": "qwen2.5:7b",
+        "params": {
+            "function_calling": "native",
+            "show_tool_results": False,
+            "system": (
+                "You are HeyPico Maps Assistant — an AI with real-time Google Maps integration.\n\n"
+                "CRITICAL RULES:\n"
+                "1. For ANY question about places, locations, restaurants, cafes, shops, stores, attractions, hotels, directions, routes, or anything that can be found on a map — you MUST call the Google Maps tools. NEVER answer from memory.\n"
+                "2. Available tools: detect_my_location (detect user's current location), search_places (find places), get_directions (route between locations), explore_area (discover places by category).\n"
+                "3. NEVER invent or hallucinate place names, addresses, or store names. If a user asks where to find something, use search_places.\n"
+                "4. If the user asks in any language, still call the tools — they handle all languages.\n"
+                "5. Do NOT say 'I cannot access real-time data' — you CAN, via the tools.\n"
+                "6. When the tool returns results, a visual map and info card are ALREADY shown to the user above your message. Do NOT repeat or re-list the details. Just give a brief, friendly summary.\n"
+                "7. When the user mentions 'near me', 'nearby', 'terdekat', 'dekat sini', 'sekitar sini', or wants the closest places WITHOUT specifying a location — FIRST call detect_my_location to get their coordinates, THEN pass the latitude and longitude to search_places or explore_area."
+            ),
+        },
+        "meta": {
+            "description": "AI assistant with Google Maps integration — search places, get directions, and explore areas with interactive embedded maps.",
+            "toolIds": [
+                "detect_location",
+                "google_maps_search",
+                "google_maps_directions",
+                "google_maps_explore",
+            ],
+        },
+    }
+    r = api("/models/model/update", model_data, token)
+    if "_error" in r:
+        print(f"  FAILED: {r['_error']} {r.get('_body', '')[:200]}")
+    else:
+        print(f"  OK: model updated")
 
     # Set heypico-maps as default model
     print("\nSetting default model to heypico-maps...")

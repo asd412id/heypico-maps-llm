@@ -133,7 +133,7 @@ localhost:3000/*           →  open-webui:8080
 | Geocoding API | Convert addresses to lat/lng coordinates |
 | Maps Embed API | Interactive map iframe in chat |
 
-> **Static Maps API is no longer used.** It was previously used for overview images but has been replaced by the Maps Embed API for a better interactive experience.
+> **Static Maps API** is used for map card images (numbered markers for places, route polyline for directions). It replaced the interactive Maps Embed API in v4.0.0 for better mobile compatibility.
 
 **Note:** Places API (New) is used instead of the legacy Places API for future-proof compatibility. It uses field masks for efficient data fetching.
 
@@ -210,7 +210,34 @@ localhost:3000/*           →  open-webui:8080
 
 ---
 
-## 15. No GPU Required (But Recommended)
+## 15. Desktop Link Limitation (Open WebUI Iframe Sandbox)
+
+**Assumption:** Clickable links inside place cards (Google Maps links) work on **mobile browsers** but **not on desktop browsers**.
+
+**Reasoning:**
+- Open WebUI renders tool embeds inside sandboxed `<iframe>` elements with `sandbox="allow-scripts allow-downloads"`
+- The sandbox does **not** include `allow-popups` or `allow-popups-to-escape-sandbox`, which means `<a target="_blank">` links inside the iframe are blocked by the browser on desktop
+- On **mobile browsers** (Android Chrome, iOS Safari), tapping a Google Maps link triggers the OS intent system which opens the Google Maps app directly — this bypasses the iframe sandbox entirely
+- There is **no Open WebUI setting** to add `allow-popups` to the sandbox. The value is hardcoded in the compiled Svelte frontend
+- A `setup/patch-sandbox.sh` script is included that patches the compiled JS files to add `allow-popups`, but this is fragile (breaks on Open WebUI updates) and may not work reliably
+- **Decision:** Focus on mobile experience where links work natively. Place card names are still rendered as clickable `<a>` tags for mobile users. Desktop users can copy the Google Maps link from the LLM's markdown text response instead.
+
+---
+
+## 16. Static Maps API for Map Cards (v4.0.0)
+
+**Assumption:** Map cards use Google Maps Static API images instead of interactive Maps Embed iframes.
+
+**Reasoning:**
+- Google Maps Embed API iframes inside Open WebUI's sandboxed iframes created "iframe-in-iframe" issues (double sandbox, interaction problems)
+- Static Maps API returns a simple `<img>` that renders reliably inside any iframe sandbox
+- Numbered markers (1-9, A-Z) match the place numbering in the info card below
+- Direction maps show the route polyline with origin (A/green) and destination (B/red) markers
+- Static images load faster and use less bandwidth than interactive embeds
+
+---
+
+## 17. No GPU Required (But Recommended)
 
 **Assumption:** The project works on CPU-only machines.
 
@@ -219,3 +246,49 @@ localhost:3000/*           →  open-webui:8080
 - GPU support is enabled by default in `docker-compose.yml` (NVIDIA)
 - Remove the `deploy.resources.reservations` block for CPU-only machines
 - Response time: ~2-5s per token on CPU vs ~0.1s on GPU
+
+---
+
+## 18. Browser GPS Geolocation (Popup Approach)
+
+**Assumption:** When the user asks for "nearby" places, the system detects their location via browser GPS geolocation using a popup window, with IP geolocation as a fallback.
+
+**Why a popup?**
+- Open WebUI renders tool embeds inside sandboxed `<iframe>` elements
+- The iframe sandbox does **not** include `allow="geolocation"`, so `navigator.geolocation` is blocked inside iframes
+- The sandbox **does** include `allow-popups-to-escape-sandbox`, so a popup window opened from the iframe runs at top-level context where GPS works
+
+**Flow:**
+1. LLM calls `detect_my_location` tool
+2. Tool first checks if stored GPS coordinates exist (Redis, 1-hour TTL)
+3. If not, tool emits a geolocation card (iframe embed) with an "Allow Location" button
+4. User clicks button → popup opens at `/api/maps/user-location/gps/{user_id}`
+5. Popup requests `navigator.geolocation.getCurrentPosition()`
+6. On success/failure, popup POSTs result to `/api/maps/geo-result`
+7. Tool polls `/api/maps/geo-result/{request_id}` every 1 second (max 20s)
+8. If GPS succeeds, tool returns precise coordinates + reverse-geocoded address
+9. If GPS fails/times out, tool falls back to IP geolocation via ip-api.com
+
+**Security:**
+- The geolocation card, popup, and geo-result endpoints are **public** (no API key required) — they are accessed from the user's browser
+- Geo results are stored with a random UUID `request_id` and a 120-second TTL in Redis
+- Successful GPS coordinates are also persisted to `user_location:{user_id}` with a 1-hour TTL for reuse
+- The backend API key is **never exposed** to the browser — the popup and card HTML contain no secrets
+
+---
+
+## 19. Four Tools (Not Three)
+
+**Assumption:** The system uses 4 Open WebUI tools:
+
+| Tool | Purpose |
+|------|---------|
+| `detect_location` | Detect user's GPS location (browser geolocation + IP fallback) |
+| `google_maps_search` | Search for places near a location or coordinates |
+| `google_maps_explore` | Explore an area by category (food, coffee, etc.) |
+| `google_maps_directions` | Get turn-by-turn directions between two locations |
+
+**Reasoning:**
+- `detect_location` is called **first** when the user mentions "near me", "nearby", "terdekat", etc.
+- It returns precise GPS coordinates that are then passed to `search_places` or `explore_area` as `latitude`/`longitude` parameters
+- This two-step flow (detect → search) gives much more accurate results than IP-based geolocation alone

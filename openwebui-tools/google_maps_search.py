@@ -1,8 +1,8 @@
 """
 title: Google Maps Place Search
-description: Search for places (restaurants, cafes, attractions, etc.) near a location and display interactive embedded maps in chat.
+description: Search for places (restaurants, cafes, attractions, etc.) near a location and display a rich info card in chat.
 author: HeyPico AI Test
-version: 2.0.0
+version: 4.0.0
 license: MIT
 requirements: httpx
 """
@@ -14,16 +14,10 @@ from pydantic import BaseModel, Field
 from typing import Optional
 
 
-def _redirect_url(frontend_url: str, target_url: str) -> str:
-    """Route Google Maps URL through /api/maps/open to bypass COOP."""
+def _card_url(frontend_url: str, card_id: str) -> str:
+    """Build the public URL for a rendered card embed."""
     base = frontend_url.rstrip("/")
-    return f"{base}/api/maps/open?url={urllib.parse.quote(target_url, safe='')}"
-
-
-def _embed_url(frontend_url: str, maps_embed_url: str, height: int = 450) -> str:
-    """Wrap a Google Maps embed URL via /api/maps/embed wrapper."""
-    base = frontend_url.rstrip("/")
-    return f"{base}/api/maps/embed?url={urllib.parse.quote(maps_embed_url, safe='')}&height={height}"
+    return f"{base}/api/maps/card/{card_id}"
 
 
 class Tools:
@@ -40,10 +34,6 @@ class Tools:
             default="",
             description="Internal API key for the backend (set in .env as BACKEND_API_KEY)",
         )
-        google_maps_api_key: str = Field(
-            default="",
-            description="Google Maps API key — used for embedding the map in the UI",
-        )
         default_radius_meters: int = Field(
             default=5000,
             description="Default search radius in meters",
@@ -54,24 +44,27 @@ class Tools:
             backend_url=os.getenv("BACKEND_URL", "http://backend:8000"),
             frontend_url=os.getenv("FRONTEND_URL", "http://localhost:3000"),
             backend_api_key=os.getenv("BACKEND_API_KEY", ""),
-            google_maps_api_key=os.getenv("GOOGLE_MAPS_API_KEY", ""),
         )
 
     async def search_places(
         self,
         query: str,
         location: Optional[str] = None,
+        latitude: Optional[float] = None,
+        longitude: Optional[float] = None,
         max_results: int = 5,
         __event_emitter__=None,
     ) -> str:
         """
         Search for places (restaurants, cafes, attractions, etc.) near a location.
-        Returns a map and place results with clickable Google Maps links.
+        Returns a rich info card and place results with Google Maps links.
 
         :param query: What to search for, e.g. "pizza restaurant", "coffee shop", "tourist attraction"
         :param location: Location to search near, e.g. "Jakarta, Indonesia" or "SCBD Jakarta". If not provided, returns general results.
+        :param latitude: Latitude coordinate from detect_my_location (e.g. -6.2). Use this for "near me" queries.
+        :param longitude: Longitude coordinate from detect_my_location (e.g. 106.8). Use this for "near me" queries.
         :param max_results: Number of results to show (1-10)
-        :return: Map and place results with clickable links
+        :return: Info card and place results with details
         """
         if __event_emitter__:
             await __event_emitter__(
@@ -91,6 +84,8 @@ class Tools:
                     json={
                         "query": query,
                         "location": location,
+                        "latitude": latitude,
+                        "longitude": longitude,
                         "radius_meters": self.valves.default_radius_meters,
                         "max_results": min(max_results, 10),
                     },
@@ -141,63 +136,81 @@ class Tools:
                 }
             )
 
-        redirect = lambda url: _redirect_url(self.valves.frontend_url, url)
+        # Build info card data
+        card_places = [
+            {
+                "name": p["name"],
+                "address": p["address"],
+                "rating": p.get("rating"),
+                "user_ratings_total": p.get("user_ratings_total"),
+                "types": p.get("types", [])[:2],
+                "price_level": p.get("price_level"),
+                "open_now": p.get("open_now"),
+                "lat": p.get("lat"),
+                "lng": p.get("lng"),
+                "maps_url": p.get("maps_url", ""),
+            }
+            for p in places
+        ]
 
-        # Build Google Maps Embed URL for interactive map
-        search_q = f"{query} near {location}" if location else query
-        embed_url = (
-            f"https://www.google.com/maps/embed/v1/search"
-            f"?key={self.valves.google_maps_api_key}"
-            f"&q={urllib.parse.quote(search_q)}"
-        )
-
-        # Wrap in backend proxy so the iframe auto-resizes via postMessage
-        wrapper_url = _embed_url(self.valves.frontend_url, embed_url)
-
-        # Emit the interactive map as an embed (rendered as sandboxed iframe by Open WebUI)
-        if __event_emitter__:
-            await __event_emitter__(
-                {
-                    "type": "embeds",
-                    "data": {"embeds": [wrapper_url]},
-                }
-            )
-
-        # Build markdown result for LLM to present
         location_label = f" near {location}" if location else ""
-        lines = []
-        lines.append(f"Found {count} places for '{query}'{location_label}.\n")
+        card_data = {
+            "card_type": "places",
+            "title": f"Search: {query}",
+            "subtitle": f"Found {count} places{location_label}",
+            "places": card_places,
+        }
 
-        for i, p in enumerate(places):
-            link = redirect(p["maps_url"])
-            rating = f"⭐ {p['rating']}" if p.get("rating") else ""
-            reviews = (
-                f"({p.get('user_ratings_total', 0):,} reviews)"
-                if p.get("user_ratings_total")
-                else ""
-            )
-            price = (
-                "$" * (p.get("price_level", 0) + 1)
-                if p.get("price_level") is not None
-                else ""
-            )
-            status = ""
-            if p.get("open_now") is not None:
-                status = "🟢 Open now" if p["open_now"] else "🔴 Closed"
-            types = ", ".join(
-                t.replace("_", " ").title() for t in p.get("types", [])[:2]
-            )
-
-            lines.append(f"{i + 1}. **{p['name']}** — {types}")
-            details = " · ".join(filter(None, [rating, reviews, price, status]))
-            if details:
-                lines.append(f"   {details}")
-            lines.append(f"   📍 {p['address']}")
-            lines.append(f"   🔗 [View on Google Maps]({link})")
-            lines.append("")
-
-        lines.append(
-            "\nPresent each place above with its details and clickable Google Maps link."
+        # Build map card data (Static Maps with numbered markers)
+        search_query = urllib.parse.quote(
+            f"{query} near {location}" if location else query
         )
+        gmaps_search_url = f"https://www.google.com/maps/search/{search_query}"
+        map_card_data = {
+            "card_type": "places_map",
+            "title": f"Search: {query}",
+            "maps_url": gmaps_search_url,
+            "places": [
+                {"lat": p.get("lat"), "lng": p.get("lng")}
+                for p in places
+                if p.get("lat") is not None
+            ],
+        }
 
-        return "\n".join(lines)
+        try:
+            async with httpx.AsyncClient(timeout=10.0) as client:
+                # Create map card
+                map_resp = await client.post(
+                    f"{self.valves.backend_url}/maps/card",
+                    json=map_card_data,
+                    headers={"X-API-Key": self.valves.backend_api_key},
+                )
+                map_resp.raise_for_status()
+                map_card_id = map_resp.json()["card_id"]
+
+                # Create info card
+                card_resp = await client.post(
+                    f"{self.valves.backend_url}/maps/card",
+                    json=card_data,
+                    headers={"X-API-Key": self.valves.backend_api_key},
+                )
+                card_resp.raise_for_status()
+                card_id = card_resp.json()["card_id"]
+
+            map_embed = _card_url(self.valves.frontend_url, map_card_id)
+            card_embed = _card_url(self.valves.frontend_url, card_id)
+            if __event_emitter__:
+                await __event_emitter__(
+                    {"type": "embeds", "data": {"embeds": [map_embed, card_embed]}}
+                )
+        except Exception:
+            pass  # Card embed is optional — text result still works
+
+        # Build concise result — card embed already shows full details
+        place_names = ", ".join(p["name"] for p in places)
+        return (
+            f"Found {count} places for '{query}'{location_label}: {place_names}. "
+            f"The map and detailed info card are shown above. "
+            f"Give a brief, friendly summary of the results. Do NOT re-list all the places — the card already shows them. "
+            f"You may highlight 1-2 interesting picks if relevant."
+        )

@@ -1,29 +1,24 @@
 """
 title: Google Maps Directions
-description: Get turn-by-turn directions between two locations with an embedded interactive map in chat.
+description: Get turn-by-turn directions between two locations with a rich info card in chat.
 author: HeyPico AI Test
-version: 2.0.0
+version: 4.0.0
 license: MIT
 requirements: httpx
 """
 
 import httpx
 import os
+import re
 import urllib.parse
 from pydantic import BaseModel, Field
 from typing import Literal
 
 
-def _redirect_url(frontend_url: str, target_url: str) -> str:
-    """Route Google Maps URL through /api/maps/open to bypass COOP."""
+def _card_url(frontend_url: str, card_id: str) -> str:
+    """Build the public URL for a rendered card embed."""
     base = frontend_url.rstrip("/")
-    return f"{base}/api/maps/open?url={urllib.parse.quote(target_url, safe='')}"
-
-
-def _embed_url(frontend_url: str, maps_embed_url: str, height: int = 450) -> str:
-    """Wrap a Google Maps embed URL via /api/maps/embed wrapper."""
-    base = frontend_url.rstrip("/")
-    return f"{base}/api/maps/embed?url={urllib.parse.quote(maps_embed_url, safe='')}&height={height}"
+    return f"{base}/api/maps/card/{card_id}"
 
 
 class Tools:
@@ -40,17 +35,12 @@ class Tools:
             default="",
             description="Internal API key for the backend",
         )
-        google_maps_api_key: str = Field(
-            default="",
-            description="Google Maps API key for embed iframe",
-        )
 
     def __init__(self):
         self.valves = self.Valves(
             backend_url=os.getenv("BACKEND_URL", "http://backend:8000"),
             frontend_url=os.getenv("FRONTEND_URL", "http://localhost:3000"),
             backend_api_key=os.getenv("BACKEND_API_KEY", ""),
-            google_maps_api_key=os.getenv("GOOGLE_MAPS_API_KEY", ""),
         )
 
     async def get_directions(
@@ -61,12 +51,12 @@ class Tools:
         __event_emitter__=None,
     ) -> str:
         """
-        Get turn-by-turn directions between two locations. Shows an embedded interactive map with the route and step-by-step instructions.
+        Get turn-by-turn directions between two locations. Shows a rich info card with route and step-by-step instructions.
 
         :param origin: Starting point, e.g. "Monas Jakarta" or "Jl. Sudirman No.1"
         :param destination: End point, e.g. "Sarinah Jakarta" or "Bandung, West Java"
         :param travel_mode: Transportation mode: driving, walking, transit, or bicycling
-        :return: Interactive map with directions and route steps
+        :return: Info card with directions and route steps
         """
         if __event_emitter__:
             await __event_emitter__(
@@ -113,13 +103,11 @@ class Tools:
                 {
                     "type": "status",
                     "data": {
-                        "description": f"✅ Route found: {data['total_distance']} · {data['total_duration']}",
+                        "description": f"\u2705 Route found: {data.get('total_distance', '')} \u00b7 {data.get('total_duration', '')}",
                         "done": True,
                     },
                 }
             )
-
-        redirect = lambda url: _redirect_url(self.valves.frontend_url, url)
 
         mode_icons = {
             "driving": "🚗",
@@ -128,48 +116,82 @@ class Tools:
             "bicycling": "🚲",
         }
         mode_icon = mode_icons.get(travel_mode, "🗺️")
-
-        maps_url = redirect(data.get("maps_url", ""))
-        embed_url = data.get("embed_url", "")
         origin_addr = data.get("origin_address", origin)
         dest_addr = data.get("destination_address", destination)
 
-        # Wrap in backend proxy so the iframe auto-resizes via postMessage
-        wrapper_url = (
-            _embed_url(self.valves.frontend_url, embed_url) if embed_url else ""
+        # Build direction steps for info card
+        card_steps = [
+            {
+                "instruction": re.sub(r"<[^>]+>", "", s.get("html_instructions", "")),
+                "distance": s.get("distance", ""),
+                "duration": s.get("duration", ""),
+            }
+            for s in data.get("steps", [])
+        ]
+
+        card_data = {
+            "card_type": "directions",
+            "title": f"{origin_addr} → {dest_addr}",
+            "origin": origin_addr,
+            "destination": dest_addr,
+            "distance": data.get("total_distance", ""),
+            "duration": data.get("total_duration", ""),
+            "travel_mode": travel_mode,
+            "steps": card_steps,
+        }
+
+        # Build map card data (Static Maps with route polyline)
+        gmaps_dir_url = (
+            f"https://www.google.com/maps/dir/?api=1"
+            f"&origin={urllib.parse.quote(origin)}"
+            f"&destination={urllib.parse.quote(destination)}"
+            f"&travelmode={travel_mode}"
         )
+        map_card_data = {
+            "card_type": "directions_map",
+            "title": f"{origin_addr} → {dest_addr}",
+            "maps_url": gmaps_dir_url,
+            "overview_polyline": data.get("overview_polyline", ""),
+            "origin_lat": data.get("origin_lat"),
+            "origin_lng": data.get("origin_lng"),
+            "dest_lat": data.get("dest_lat"),
+            "dest_lng": data.get("dest_lng"),
+        }
 
-        # Emit the interactive map as an embed (rendered as sandboxed iframe by Open WebUI)
-        if __event_emitter__ and wrapper_url:
-            await __event_emitter__(
-                {
-                    "type": "embeds",
-                    "data": {"embeds": [wrapper_url]},
-                }
-            )
+        try:
+            async with httpx.AsyncClient(timeout=10.0) as client:
+                # Create map card
+                map_resp = await client.post(
+                    f"{self.valves.backend_url}/maps/card",
+                    json=map_card_data,
+                    headers={"X-API-Key": self.valves.backend_api_key},
+                )
+                map_resp.raise_for_status()
+                map_card_id = map_resp.json()["card_id"]
 
-        import re
+                # Create info card
+                card_resp = await client.post(
+                    f"{self.valves.backend_url}/maps/card",
+                    json=card_data,
+                    headers={"X-API-Key": self.valves.backend_api_key},
+                )
+                card_resp.raise_for_status()
+                card_id = card_resp.json()["card_id"]
 
-        lines = []
-        lines.append(f"{mode_icon} Directions: {origin_addr} → {dest_addr}")
-        lines.append(
-            f"Distance: {data['total_distance']} · Duration: {data['total_duration']}"
+            map_embed = _card_url(self.valves.frontend_url, map_card_id)
+            card_embed = _card_url(self.valves.frontend_url, card_id)
+            if __event_emitter__:
+                await __event_emitter__(
+                    {"type": "embeds", "data": {"embeds": [map_embed, card_embed]}}
+                )
+        except Exception:
+            pass
+
+        # Build concise result — card embed already shows full details
+        return (
+            f"{mode_icon} Directions: {origin_addr} \u2192 {dest_addr}. "
+            f"Distance: {data.get('total_distance', '')}, Duration: {data.get('total_duration', '')}. "
+            f"The route map and step-by-step directions card are shown above. "
+            f"Give a brief, friendly summary (distance, duration, travel mode). "
+            f"Do NOT re-list all the route steps \u2014 the card already shows them."
         )
-        lines.append(f"[🗺️ Open in Google Maps]({maps_url})")
-        lines.append("")
-
-        steps = data.get("steps", [])
-        if steps:
-            lines.append(f"Route ({len(steps)} steps):")
-            for i, step in enumerate(steps):
-                instruction = re.sub(r"<[^>]+>", "", step.get("html_instructions", ""))
-                dist = step.get("distance", "")
-                dur = step.get("duration", "")
-                lines.append(f"  {i + 1}. {instruction} ({dist}, {dur})")
-            lines.append("")
-
-        lines.append(
-            "Present the directions above with the clickable Google Maps link."
-        )
-
-        return "\n".join(lines)

@@ -31,11 +31,18 @@ class GoogleMapsService:
         self,
         query: str,
         location: Optional[str] = None,
+        latitude: Optional[float] = None,
+        longitude: Optional[float] = None,
         radius_meters: int = 5000,
         max_results: int = 5,
     ) -> dict:
         cache_key = self._cache_key(
-            "places", query=query, location=location, radius=radius_meters
+            "places",
+            query=query,
+            location=location,
+            lat=latitude,
+            lng=longitude,
+            radius=radius_meters,
         )
         cached = await self.cache.get(cache_key)
         if cached:
@@ -47,8 +54,19 @@ class GoogleMapsService:
             "maxResultCount": min(max_results, 20),
             "languageCode": "en",
         }
-        if location:
-            # Geocode the location first to get lat/lng for locationBias
+
+        # Use pre-resolved coordinates if provided, otherwise geocode location text
+        if latitude is not None and longitude is not None:
+            body["locationBias"] = {
+                "circle": {
+                    "center": {
+                        "latitude": latitude,
+                        "longitude": longitude,
+                    },
+                    "radius": float(radius_meters),
+                }
+            }
+        elif location:
             coords = await self.geocode(location)
             if coords:
                 body["locationBias"] = {
@@ -195,6 +213,10 @@ class GoogleMapsService:
             "overview_polyline": route.get("overview_polyline", {}).get("points", ""),
             "maps_url": maps_url,
             "embed_url": embed_url,
+            "origin_lat": leg.get("start_location", {}).get("lat"),
+            "origin_lng": leg.get("start_location", {}).get("lng"),
+            "dest_lat": leg.get("end_location", {}).get("lat"),
+            "dest_lng": leg.get("end_location", {}).get("lng"),
         }
 
         await self.cache.set(
@@ -222,6 +244,31 @@ class GoogleMapsService:
         result = {
             "lat": location["lat"],
             "lng": location["lng"],
+            "formatted_address": data["results"][0]["formatted_address"],
+        }
+
+        await self.cache.set(cache_key, result, ttl=settings.cache_ttl_geocode_seconds)
+        return result
+
+    async def reverse_geocode(self, lat: float, lng: float) -> Optional[dict]:
+        cache_key = self._cache_key(
+            "reverse_geocode", lat=round(lat, 4), lng=round(lng, 4)
+        )
+        cached = await self.cache.get(cache_key)
+        if cached:
+            return cached
+
+        response = await self.client.get(
+            f"{GOOGLE_MAPS_BASE_URL}/geocode/json",
+            params={"latlng": f"{lat},{lng}", "key": self.api_key},
+        )
+        response.raise_for_status()
+        data = response.json()
+
+        if data.get("status") != "OK" or not data.get("results"):
+            return None
+
+        result = {
             "formatted_address": data["results"][0]["formatted_address"],
         }
 

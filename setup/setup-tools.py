@@ -2,8 +2,8 @@
 """
 Auto-setup script for Open WebUI — runs inside the open-webui container.
 1. Create admin account (first user becomes admin)
-2. Register all 3 Google Maps tools
-3. Configure Valves (API keys, backend URL)
+2. Register all 4 tools (detect_location + 3 Google Maps tools)
+3. Configure Valves (API keys, backend URL, frontend URL)
 4. Create custom model with native tool calling enabled
 """
 
@@ -22,7 +22,7 @@ ADMIN_NAME = os.getenv("ADMIN_NAME", "HeyPico Admin")
 
 BACKEND_URL = os.getenv("BACKEND_URL", "http://backend:8000")
 BACKEND_API_KEY = os.getenv("BACKEND_API_KEY", "")
-GOOGLE_MAPS_API_KEY = os.getenv("GOOGLE_MAPS_API_KEY", "")
+FRONTEND_URL = os.getenv("FRONTEND_URL", "http://localhost:3000")
 
 BASE_MODEL = os.getenv("DEFAULT_MODEL", "qwen2.5:7b")
 TOOLS_DIR = os.getenv("TOOLS_DIR", "/app/backend/data/tools")
@@ -156,7 +156,7 @@ def configure_valves(token, tool_ids):
     base_valve_data = {
         "backend_url": BACKEND_URL,
         "backend_api_key": BACKEND_API_KEY,
-        "google_maps_api_key": GOOGLE_MAPS_API_KEY,
+        "frontend_url": FRONTEND_URL,
     }
 
     for tool_id in tool_ids:
@@ -206,20 +206,15 @@ def create_model(token, tool_ids):
                 "You are HeyPico Maps Assistant — an AI with real-time Google Maps integration.\n\n"
                 "CRITICAL RULES:\n"
                 "1. For ANY question about places, locations, restaurants, cafes, shops, stores, attractions, hotels, directions, routes, or anything that can be found on a map — you MUST call the Google Maps tools. NEVER answer from memory.\n"
-                "2. Available tools: search_places (find places), get_directions (route between locations), explore_area (discover places by category).\n"
+                "2. Available tools: detect_my_location (detect user's current location), search_places (find places), get_directions (route between locations), explore_area (discover places by category).\n"
                 "3. NEVER invent or hallucinate place names, addresses, or store names. If a user asks where to find something, use search_places.\n"
                 "4. If the user asks in any language, still call the tools — they handle all languages.\n"
-                "5. Do NOT say 'I cannot access real-time data' — you CAN, via the tools.\n\n"
-                "RENDERING RULES (MUST FOLLOW):\n"
-                "When the tool returns results containing INTERACTIVE_MAP_EMBED_URL, you MUST:\n"
-                '1. Render the map as an HTML iframe: <iframe src="THE_EMBED_URL" width="100%" height="400" style="border:0;border-radius:12px" allowfullscreen loading="lazy"></iframe>\n'
-                "2. Present each place/location as a clickable markdown link: [Place Name](url)\n"
-                "3. Include ratings, reviews, open status, and addresses from the tool data.\n"
-                "4. ALWAYS show the iframe FIRST, then the list of places below it.\n"
-                "5. NEVER skip the iframe — it is the most important part of the response.\n"
-                "6. NEVER modify or truncate the INTERACTIVE_MAP_EMBED_URL — use it exactly as provided."
+                "5. Do NOT say 'I cannot access real-time data' — you CAN, via the tools.\n"
+                "6. When the tool returns results, a visual map and info card are ALREADY shown to the user above your message. Do NOT repeat or re-list the details. Just give a brief, friendly summary.\n"
+                "7. When the user mentions 'near me', 'nearby', 'terdekat', 'dekat sini', 'sekitar sini', or wants the closest places WITHOUT specifying a location — FIRST call detect_my_location to get their coordinates, THEN pass the latitude and longitude to search_places or explore_area."
             ),
             "function_calling": "native",
+            "show_tool_results": False,
         },
         "meta": {
             "description": "AI assistant with Google Maps integration — search places, get directions, and explore areas with interactive embedded maps.",
@@ -273,7 +268,12 @@ def main():
     if tool_ids:
         configure_valves(token, tool_ids)
 
-    all_tools = ["google_maps_search", "google_maps_directions", "google_maps_explore"]
+    all_tools = [
+        "detect_location",
+        "google_maps_search",
+        "google_maps_directions",
+        "google_maps_explore",
+    ]
     create_model(token, all_tools)
     set_default_model(token, "heypico-maps")
 
